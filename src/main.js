@@ -446,7 +446,17 @@ const pick = (list) => list[Math.floor(Math.random() * list.length)];
 // follow-up is thrown if it reaches, else another strike that does; while the
 // opponent still staggers from a hit, the attacker waits up to COMBO_WAIT s.
 const COMBO_WAIT = 0.5;
-const COMBO_SLACK = RANGE_NEAR + INCH_MAX * 0.75; // the wind-up inching closes the rest
+const COMBO_SLACK = RANGE_NEAR + INCH_MAX * 0.75;
+// How far out of range a follow-up may start: the inching in its wind-up
+// closes the rest, and a fast strike (a jab lands 0.14 s after it starts)
+// has little time to do it.
+function comboSlack(me, name) {
+  const m = MOVES[name];
+  const clip = clipFrames(me, MOVE_CLIPS[name]);
+  const hitAt = clip && clip.impact > 0 ? (clip.impact + 0.5) / clip.frames.length : m.hitAt;
+  const inch = Math.min(INCH_MAX, INCH_SPEED * hitAt * m.dur);
+  return Math.min(COMBO_SLACK, RANGE_NEAR + 0.8 * inch);
+}
 const STRIKES = [...new Set(COMBOS.flatMap((c) => c.seq))];
 const KICKS = new Set(['ffoot', 'bfoot', 'fk', 'bk']);
 const isKick = (name) => !!name && KICKS.has(MOVES[name].limb);
@@ -466,7 +476,7 @@ function followUp(me, opp, planned) {
   const opts = [];
   for (const name of STRIKES) {
     const ideal = strikeIdeal(me, opp, name);
-    if (ideal == null || Math.abs(d - ideal) > COMBO_SLACK) continue;
+    if (ideal == null || Math.abs(d - ideal) > comboSlack(me, name)) continue;
     let w = (name === planned ? 4 : 1) * repeatFactor(me, name);
     if (isKick(name) !== isKick(last)) w *= 1.6; // hands then legs, legs then hands
     w *= Math.exp(-(((ideal - d) / (12 * Z)) ** 2)) + 0.1;
