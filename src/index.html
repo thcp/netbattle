@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>NetBattle</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        user-select: none;
+      }
+      /* Info panel, shown after hovering a fighter for 2 seconds. */
+      #info {
+        --accent: #e53935;
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 248px;
+        box-sizing: border-box;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(18, 18, 24, 0.94);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+        color: #ececf1;
+        font: 12px/1.35 'Segoe UI', system-ui, -apple-system, sans-serif;
+        z-index: 10;
+      }
+      #info[hidden] {
+        display: none;
+      }
+      #info .head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      #info .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      #info .sub {
+        color: #a0a0ad;
+      }
+      #info .x {
+        margin-left: auto;
+        width: 22px;
+        height: 22px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: #a0a0ad;
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #info .x:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+      #info .label {
+        margin: 8px 0 5px;
+        color: #a0a0ad;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      #info .row {
+        display: flex;
+        justify-content: space-between;
+        margin: 3px 0;
+        color: #a0a0ad;
+      }
+      #info .row b {
+        color: #ececf1;
+        font-weight: 600;
+      }
+      #info .bar {
+        height: 5px;
+        margin: 4px 0 6px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+      }
+      #info .bar i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+      }
+      #info .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+        text-align: center;
+      }
+      #info .grid b {
+        display: block;
+        font-size: 15px;
+      }
+      #info .grid span,
+      #info .soon {
+        color: #7d7d89;
+        font-size: 10px;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      #info .stat {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 4px 0;
+      }
+      #info .stat span {
+        width: 58px;
+        color: #a0a0ad;
+      }
+      #info .pips {
+        display: flex;
+        gap: 2px;
+        flex: 1;
+      }
+      #info .pips i {
+        flex: 1;
+        height: 8px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+      #info .pips i.on {
+        background: var(--accent);
+      }
+      #info .stat button {
+        width: 20px;
+        height: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 5px;
+        background: transparent;
+        color: #7d7d89;
+        font: inherit;
+        line-height: 1;
+      }
+      #info .note {
+        margin-top: 10px;
+        color: #7d7d89;
+        font-size: 11px;
+      }
+      .sprite {
+        position: fixed;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        will-change: transform;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info" hidden></div>
+    <script src="main.js"></script>
+  </body>
+</html>

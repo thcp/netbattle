@@ -1,0 +1,6 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+
+# Claude Code local settings and session files
+.claude/
