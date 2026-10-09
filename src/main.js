@@ -454,7 +454,10 @@ function comboSlack(me, name) {
   const m = MOVES[name];
   const clip = clipFrames(me, MOVE_CLIPS[name]);
   const hitAt = clip && clip.impact > 0 ? (clip.impact + 0.5) / clip.frames.length : m.hitAt;
-  const inch = Math.min(INCH_MAX, INCH_SPEED * hitAt * m.dur);
+  // Speed points (and tiredness) scale the strike time; the inching speed
+  // scales with it (see stepAttack), so the reach of the inching stays put.
+  const t = tempo(me);
+  const inch = Math.min(INCH_MAX, INCH_SPEED * t * hitAt * (m.dur / t));
   return Math.min(COMBO_SLACK, RANGE_NEAR + 0.8 * inch);
 }
 const STRIKES = [...new Set(COMBOS.flatMap((c) => c.seq))];
@@ -509,7 +512,7 @@ function restAfterCombo(me, opp) {
   const r = Math.random();
   if (r < 0.2) cool = Math.max(0.4, cool * 0.5);
   else if (r < 0.3) cool *= 1.8;
-  me.cool = cool;
+  me.cool = cool / tempo(me); // Speed points shorten the pause
 }
 
 // Between two strikes of a combo: throw the next one once the opponent is set,
@@ -518,7 +521,7 @@ function restAfterCombo(me, opp) {
 function continueCombo(me, opp) {
   if (!me.comboUntil) return false;
   const lost = opp.state === 'attack' || opp.state === 'down' || opp.airborne || opp.state === 'drag' || opp.state === 'scene';
-  if (lost || fightClock > me.comboUntil) {
+  if (lost || me.gassed || fightClock > me.comboUntil) {
     restAfterCombo(me, opp);
     return false;
   }
@@ -534,7 +537,7 @@ function continueCombo(me, opp) {
   const d = Math.abs(opp.x - me.x);
   if (canStep(me) && !me.comboStepped && stepInFits(me, opp, d)) {
     me.comboStepped = true;
-    me.comboUntil = fightClock + STEP_TIME + COMBO_WAIT;
+    me.comboUntil = fightClock + STEP_TIME / tempo(me) + COMBO_WAIT;
     startStep(me, 1);
     return true;
   }
@@ -594,11 +597,98 @@ function makeFighter(color, shade, arrow, key, face) {
     move: null, queue: [], atkT: 0, atkDur: 0, hitDone: false, defense: null, defCued: false,
     pose: { ...POSES.guard }, vel: zero, sk: null, sprite: makeSprite(),
     tails: null, trail: [], feet: null, flipT: 0, want: 46, wantT: 0, groundDone: false, reaches: [], scenePose: null, sceneRoll: null, sceneFree: false, ghosts: [], ghostIn: 0, tailDt: 1 / 60, aimAt: null, hipVx: 0, lastHipX: NaN,
+    // Stamina (see stepStamina); staminaMax 0 means "fill on the first frame".
+    stamina: 0, staminaMax: 0, gassed: false, spent: 0, taken: 0, koExtra: 0, riseTime: RISE_TIME, stepTime: 0, atkTempo: 1,
   };
 }
 const red = makeFighter('#e53935', '#a32420', '↓', 'down', 1);
 const blue = makeFighter('#1e88e5', '#11589c', '↑', 'up', -1);
 const fighters = [red, blue];
+
+// ---------- Stats: speed, stamina, strength ----------
+// The numbers are from docs/leveling-spec.md. Builds are read only through
+// Progress.build(f); a fresh fighter (0 points) has tempo 1, 100 stamina and
+// hits with strMult 1.
+const NO_BUILD = { speed: 0, stamina: 0, strength: 0 };
+function buildOf(f) {
+  try {
+    return (typeof Progress !== 'undefined' && Progress.build(f)) || NO_BUILD;
+  } catch (err) {
+    return NO_BUILD;
+  }
+}
+function fighterLevel(f) {
+  try {
+    return (typeof Progress !== 'undefined' && Progress.level(f)) || 1;
+  } catch (err) {
+    return 1;
+  }
+}
+const TIRED = 0.3; // under this stamina ratio: slower and worse defence
+const GASSED_UNTIL = 0.2; // a gassed fighter attacks again from this ratio
+// Tuned from the spec's starting values with test fights: at those values a
+// fresh fighter emptied in about 30 s and the fight stalled. COST_SCALE
+// multiplies the own costs (steps, strikes), DRAIN_SCALE what blocked and
+// landed strikes take, REGEN is per second in guard (plus REGEN_PT per
+// Stamina point).
+const COST_SCALE = 0.5;
+const DRAIN_SCALE = 0.6;
+const REGEN = 12;
+const REGEN_PT = 1.2;
+const STEP_COST = 1.5 * COST_SCALE;
+const STRIKE_COST = Object.fromEntries(Object.entries({ jab: 4, cross: 4, palm: 4, uppercut: 4, spinFist: 4, elbow: 6, knee: 6, lowKick: 7, sweep: 7, frontKick: 7, teep: 7, highKick: 9, spinKick: 9 }).map(([k, v]) => [k, v * COST_SCALE]));
+const BLOCK_DRAIN = 5 * DRAIN_SCALE; // times the attacker's strMult
+const hitDrain = (m) => (10 + 0.2 * m.knock) * DRAIN_SCALE; // times strMult
+// Knockout window: the defender is at under KO_BELOW of its stamina. The whole
+// gassed period (until 20% is back) gave 6 to 8 knockouts per 3 minutes in
+// the test fights, far past the protection cap; exactly 0 gave none.
+const KO_BELOW = 0.05; // a knockout needs the defender at under this share of its stamina
+const koWindow = (f) => f.stamina < Math.max(1, KO_BELOW * f.staminaMax);
+const staminaRatio = (f) => (f.staminaMax > 0 ? f.stamina / f.staminaMax : 1);
+// Speed points make every move play faster; a tired fighter slows down.
+function tempo(f) {
+  const t = 1 + 0.025 * buildOf(f).speed;
+  return staminaRatio(f) < TIRED ? t * 0.8 : t;
+}
+// What Strength does. Spec start 0.12 per point: at 10 against 0 the weak
+// side lost stamina 4 times faster and was knocked out 10 times in 3 minutes;
+// at 0.08 and at 0.06, 1.9 to 2.7 times faster (target: 1.5 or more) and 6 to 8
+// knockouts: the knockout count comes from the gassed window, not from this.
+const STR_PT = 0.06;
+const strMult = (f) => 1 + STR_PT * buildOf(f).strength;
+// Speed in even exchanges: chance per point of difference that a block
+// becomes an evasion. Spec start 0.03 (cap 0.30): a defender blocks only about
+// a third of even strikes, so Speed 10 against 0 evaded about 10%, the target's edge.
+const SPEED_EVADE_PT = 0.05;
+const SPEED_EVADE_MAX = 0.5;
+// Full regeneration in guard and at rest, half while stepping or running,
+// none while attacking, defending or hit. Lying down and getting up count as
+// rest: without it a knocked-out fighter got up still gassed and was knocked
+// out again (26 knockouts in 3 minutes in a Speed 10 against 0 fight).
+const REGEN_FULL = new Set(['guard', 'rest', 'taichi', 'down', 'rise']);
+const REGEN_HALF = new Set(['step', 'run']);
+function stepStamina(f, dt) {
+  const st = buildOf(f).stamina;
+  const max = 100 + 10 * st;
+  if (!f.staminaMax) f.stamina = max; // starts full
+  else if (max > f.staminaMax) f.stamina += max - f.staminaMax; // a new point fills its share
+  f.staminaMax = max;
+  const k = REGEN_FULL.has(f.state) ? 1 : REGEN_HALF.has(f.state) ? 0.5 : 0;
+  f.stamina = Math.min(max, f.stamina + (REGEN + REGEN_PT * st) * k * dt);
+  if (f.gassed && f.stamina / max >= GASSED_UNTIL) f.gassed = false;
+}
+// Own effort (strikes, steps).
+function spendStamina(f, n) {
+  f.stamina = Math.max(0, f.stamina - n);
+  f.spent += n;
+  if (f.stamina <= 0) f.gassed = true;
+}
+// Taken from the opponent's blocked or landed strikes.
+function drainStamina(f, n) {
+  f.stamina = Math.max(0, f.stamina - n);
+  f.taken += n; // nominal, so the drain rate reads the same at 0
+  if (f.stamina <= 0) f.gassed = true;
+}
 
 const runSpeed = (me) => (150 + 60 * power(me)) * Z; // jogging pace, about 3 m/s
 const DEFENSES = ['block', 'blockLow', 'sway', 'duck', 'hop', 'bend'];
@@ -657,6 +747,7 @@ function setFace(me, dir) {
 function update(me, opp, dt) {
   me.clock += dt;
   me.flash -= dt;
+  stepStamina(me, dt);
   if (me.state === 'drag' || me.state === 'scene') return;
 
   if (me.airborne) {
@@ -687,7 +778,14 @@ function update(me, opp, dt) {
   if (me.timer > 0) {
     me.timer -= dt;
     if (me.timer > 0) return;
-    if (me.state === 'down') { me.state = 'rise'; me.timer = RISE_TIME; return; }
+    if (me.state === 'down') {
+      // A knockout adds koExtra to the time it takes to get up.
+      me.state = 'rise';
+      me.riseTime = RISE_TIME + (me.koExtra || 0);
+      me.koExtra = 0;
+      me.timer = me.riseTime;
+      return;
+    }
   }
   if (SHOWCASE) { me.state = 'guard'; return; }
   me.cool -= dt;
@@ -725,8 +823,17 @@ function decide(me, opp, dt) {
   me.state = 'guard';
   if (opp.state !== 'down') me.groundDone = false;
   // Finish a downed opponent with a ground punch or a stomp, once per knockdown.
-  if (opp.state === 'down' && oppFree && !me.groundDone && !outclassed(me, opp) && me.cool <= 0.3) {
-    if (d > 34 * Z) { me.x += me.face * Math.min(130 * dt, d - 34 * Z); return; }
+  if (opp.state === 'down' && oppFree && !me.groundDone && !me.gassed && !outclassed(me, opp) && me.cool <= 0.3) {
+    if (canStep(me)) {
+      // Sprites never glide: close in with a push-step, or skip the finish
+      // when no step fits (the bodies may not overlap).
+      if (d > 50 * Z + 8) {
+        if ((me.stepRest || 0) > 0) return;
+        if (stepInFits(me, opp, d)) startStep(me, 1);
+        else me.groundDone = true;
+        return;
+      }
+    } else if (d > 34 * Z) { me.x += me.face * Math.min(130 * dt, d - 34 * Z); return; }
     me.groundDone = true;
     me.queue = [];
     startMove(me, opp, Math.random() < 0.5 ? MOVES.groundPunch : MOVES.stomp);
@@ -781,6 +888,8 @@ function decide(me, opp, dt) {
     me.x += me.face * clamp((d - want) * 3, -70, 70) * dt;
   }
   if (me.cool > 0 || opp.state === 'attack' || opp.state === 'scene') return;
+  // Gassed (stamina hit 0): no new attack until GASSED_UNTIL is back.
+  if (me.gassed) return;
   // Grappling scenes need their own clips; with sprites they stay off for now.
   if (!SHEETS[me.key] && sceneReady() && opp.state === 'guard') {
     const sc = pickScene(me, opp, d);
@@ -869,11 +978,14 @@ function stepInFits(me, opp, d) {
 function startStep(me, dir) {
   const to = me.x + me.face * dir * stepLength(me);
   if (to < MARGIN || to > W - MARGIN) return;
-  // Settle between footwork steps (strikes and closing steps ignore this).
-  me.stepRest = STEP_TIME + 0.3 + Math.random() * 0.6;
+  // Speed points (and tiredness) change the step time; the 0.3 to 0.9 s
+  // settle between footwork steps stays (strikes and closing steps ignore it).
+  me.stepTime = STEP_TIME / tempo(me);
+  me.stepRest = me.stepTime + 0.3 + Math.random() * 0.6;
   me.state = 'step';
   me.stepDir = dir;
-  me.timer = STEP_TIME;
+  me.timer = me.stepTime;
+  spendStamina(me, STEP_COST);
   me.stepClip = null; // a step right after a step starts fresh
   me.stepFrame = -1;
 }
@@ -894,7 +1006,11 @@ function startMove(me, opp, m) {
   me.move = m;
   me.atkT = 0;
   const weak = outclassed(me, opp);
-  me.atkDur = m.dur * (weak ? 1.15 : 1); // an outclassed fighter is a little slower
+  // An outclassed fighter is a little slower; Speed points make it faster,
+  // tiredness slower (tempo). The inching in stepAttack scales with it.
+  me.atkTempo = tempo(me);
+  me.atkDur = (m.dur * (weak ? 1.15 : 1)) / me.atkTempo;
+  spendStamina(me, STRIKE_COST[moveName(m)] || 0);
   // With sprite clips, the hit lands in the middle of the clip's furthest-reaching frame.
   const clip = clipFrames(me, MOVE_CLIPS[moveName(m)]);
   me.hitAt = clip && clip.impact > 0 ? (clip.impact + 0.5) / clip.frames.length : m.hitAt;
@@ -914,8 +1030,9 @@ function startMove(me, opp, m) {
   // Aim where the opponent is now; if it ducks or sways, the strike misses.
   const t = aimPoint(opp, m.aim);
   me.aimAt = { dx: t.x - opp.x, y: t.y };
-  // The defender's share of traffic decides how well it defends.
-  const defChance = weak ? 0.95 : 0.2 + 0.6 * share(opp);
+  // The defender's share of traffic decides how well it defends; Speed points
+  // help, tiredness hurts.
+  const defChance = (weak ? 0.95 : 0.2 + 0.6 * share(opp)) + 0.01 * buildOf(opp).speed - (staminaRatio(opp) < TIRED ? 0.25 : 0);
   me.defense = !m.ground && Math.random() < defChance ? pick(m.defend) || null : null;
   // The leader can parry a hand strike and counter (elbow, knee, shove), or
   // catch a punch and turn it into an arm lock.
@@ -941,6 +1058,16 @@ function startMove(me, opp, m) {
       me.defense = m.defend.find((x) => x === 'block' || x === 'blockLow') || 'block';
     } else if (me.defense !== 'sway' && (!LEGS[m.limb] || Math.abs(opp.x - me.x) < DUCK_ROOM)) {
       me.defense = 'sway';
+    }
+  }
+  // Speed: in an even exchange a faster defender turns some blocks into
+  // evasions, by the same rules as above (a sway, a duck only under a head
+  // kick from range); a strike with no evasion in its list stays blocked.
+  if (SHEETS[opp.key] && !weak && (me.defense === 'block' || me.defense === 'blockLow')
+    && Math.random() < clamp(SPEED_EVADE_PT * (buildOf(opp).speed - buildOf(me).speed), 0, SPEED_EVADE_MAX)) {
+    const evades = m.defend.filter((x) => EVADES.has(x));
+    if (evades.length || m.aim === 'head') {
+      me.defense = m.aim === 'head' && LEGS[m.limb] && Math.abs(opp.x - me.x) >= DUCK_ROOM ? 'duck' : 'sway';
     }
   }
   // Aim where a blocking guard will be at impact, not where it is now.
@@ -970,7 +1097,9 @@ function stepAttack(me, opp, dt) {
     const front = targetFront(opp.lastDraw, m) + (me.defCued ? 0 : me.face * (me.pullback || 0));
     const err = LAND_AT - me.face * (tip - front);
     const room = INCH_MAX + (me.pullback || 0) - Math.abs(me.inched || 0);
-    const step = clamp(err, -Math.min(INCH_SPEED * dt, room), Math.min(INCH_SPEED * dt, room));
+    // The wind-up is shorter at a higher tempo: inch faster by the same factor.
+    const inch = INCH_SPEED * (me.atkTempo || 1) * dt;
+    const step = clamp(err, -Math.min(inch, room), Math.min(inch, room));
     if (Math.abs(err) > 1 && room > 0) {
       me.x += me.face * step;
       me.inched = (me.inched || 0) + step;
@@ -1104,6 +1233,7 @@ function impact(me, opp, m) {
       hitstop(0.035);
     }
     if (opp.record) opp.record.blocked++;
+    drainStamina(opp, BLOCK_DRAIN * strMult(me)); // blocking still costs: Strength makes it cost more
     // A clean block opens a counter: the defender fires back as soon as the
     // strike is over, and the attacker's combo often stops there.
     if (SHEETS[opp.key] && !outclassed(opp, me) && Math.random() < 0.25 + 0.5 * share(opp)) {
@@ -1120,7 +1250,32 @@ function impact(me, opp, m) {
     ring(me, at, me.color);
     hitstop(0.03 + 0.05 * Math.min(1, (m.knock * str) / 80));
   }
-  if (m.low) {
+  // Knockout: a heavy hit (the blood rule) or a low strike that lands while
+  // the defender is out of stamina (see koWindow) always knocks down, and it
+  // gets up 0.6 s later.
+  const ko = koWindow(opp) && (m.low || m.knock * str >= 30);
+  // A low strike knocks down with probability 1 - 0.05 * stamina points *
+  // stamina ratio: always for a fresh fighter, as before stamina existed.
+  const p = m.low ? 1 - 0.05 * buildOf(opp).stamina * staminaRatio(opp) : 0;
+  const downed = ko || (m.low && Math.random() < p);
+  drainStamina(opp, hitDrain(m) * strMult(me));
+  if (FIGHT_TEST && (m.low || ko)) {
+    invoke('showcase_mark', { label: `LOWHIT victim=${opp.key} attacker=${me.key} move=${moveName(m)} low=${m.low ? 1 : 0} p=${p.toFixed(2)} down=${downed ? 1 : 0} ko=${ko ? 1 : 0} st=${opp.stamina.toFixed(0)}` }).catch(() => {});
+  }
+  if (ko) {
+    opp.koExtra = 0.6;
+    // A knockout ends the gassed state (a second wind): otherwise a strike
+    // while it gets up knocked it out again a second later.
+    opp.stamina = Math.max(opp.stamina, GASSED_UNTIL * opp.staminaMax);
+    opp.gassed = false;
+    if (FIGHT_TEST) invoke('showcase_mark', { label: `KO victim=${opp.key} attacker=${me.key} move=${moveName(m)}` }).catch(() => {});
+    try {
+      if (typeof Progress !== 'undefined') Progress.onKnockout(opp, me);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  if (downed) {
     if (me.record) me.record.knockdowns++;
     opp.state = 'down';
     opp.timer = 0.7;
@@ -2493,7 +2648,7 @@ function pickFrame(me, sheet) {
     case 'hit':
       return once('hit', me.stateAge / 0.3) || loop('stance');
     case 'step':
-      return once(me.stepDir > 0 ? 'stepF' : 'stepB', me.stateAge / STEP_TIME) || loop('stance');
+      return once(me.stepDir > 0 ? 'stepF' : 'stepB', me.stateAge / (me.stepTime || STEP_TIME)) || loop('stance');
     // Defence plays once across the state's duration (elapsed + remaining).
     case 'block':
       return once('block', me.stateAge / (me.stateAge + me.timer)) || loop('stance');
@@ -2518,7 +2673,7 @@ function pickFrame(me, sheet) {
     case 'down':
       return once('down', me.stateAge / 0.4) || once('hit', 1) || loop('stance');
     case 'rise':
-      return once('getUp', me.stateAge / RISE_TIME) || loop('stance');
+      return once('getUp', me.stateAge / (me.riseTime || RISE_TIME)) || loop('stance');
     case 'flip':
       return once('backflip', clamp(me.flipT / FLIP_TIME, 0, 1)) || loop('stance');
     case 'scene':
@@ -2646,8 +2801,9 @@ function paintSheet(me, sp, sheet) {
 
 // When the fighters stand close, labels split apart from the midpoint so
 // they never overlap.
+const STAMINA_BAR_W = 44;
 function drawLabel(me, opp, box) {
-  const text = me.arrow + ' ' + fmt(speed[me.key]);
+  const text = me.arrow + ' ' + fmt(speed[me.key]) + '  Lv ' + fighterLevel(me);
   let x = me.sk.hip.x;
   ctx.textAlign = 'center';
   if (Math.abs(opp.x - me.x) < 100) {
@@ -2663,6 +2819,16 @@ function drawLabel(me, opp, box) {
   ctx.strokeText(text, x, y);
   ctx.fillStyle = me.color;
   ctx.fillText(text, x, y);
+  // Thin stamina bar under the label, aligned like the text: green, amber
+  // under half, red under 30%, flashing while gassed (it hit 0).
+  const r = staminaRatio(me);
+  const bx = ctx.textAlign === 'center' ? x - STAMINA_BAR_W / 2 : ctx.textAlign === 'right' ? x - STAMINA_BAR_W : x;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(bx - 1, y + 2, STAMINA_BAR_W + 2, 4);
+  if (!me.gassed || Math.floor(performance.now() / 250) % 2) {
+    ctx.fillStyle = r < TIRED ? '#e53935' : r < 0.5 ? '#ffb300' : '#43a047';
+    ctx.fillRect(bx, y + 3, Math.max(me.gassed ? 2 : 0, Math.round(STAMINA_BAR_W * r)), 2);
+  }
 }
 
 function render() {
@@ -2777,11 +2943,8 @@ window.addEventListener('pointercancel', release);
 // ---------- Hover and info panel ----------
 // Mouse over a fighter: the fight eases into slow motion. Keep it there for
 // HOVER_OPEN_MS and an info panel opens above that fighter: live traffic and
-// this session's record. Level and stats (agility, stamina, strength) are
-// placeholders until leveling exists; the + buttons stay disabled.
-const STATS = ['Agility', 'Stamina', 'Strength'];
-const STAT_PLACEHOLDER = 5; // every stat until points can be spent
-const STAT_MAX = 10;
+// this session's record. Level, XP and stats are rendered by Progress.panel
+// (src/progression.js), which also handles the + buttons.
 const PANEL_REFRESH_MS = 500;
 const HOVER_SLOW = 0.25;
 const HOVER_OPEN_MS = 2000;
@@ -2803,35 +2966,18 @@ const STYLE = { down: 'Muay Thai', up: 'Karate' };
 
 function renderPanel() {
   const f = panelF;
-  const r = f.record;
-  const pct = Math.round(100 * power(f));
-  panel.style.setProperty('--accent', f.color);
-  panel.innerHTML = `
-    <div class="head">
-      <span class="dot"></span><strong>${f === red ? 'Red' : 'Blue'}</strong>
-      <span class="sub">${STYLE[f.key]}, ${f === red ? 'download' : 'upload'}</span>
-      <button class="x" data-close aria-label="Close">&times;</button>
-    </div>
-    <div class="row"><span>Traffic</span><b>${fmt(speed[f.key])}</b></div>
-    <div class="bar" title="Power ${pct}%"><i style="width:${pct}%"></i></div>
-    <div class="row"><span>Status</span><b>${f === leader ? 'Leading' : leader ? 'Trailing' : 'Even'}</b></div>
-    <div class="label">This session</div>
-    <div class="grid">
-      <div><b>${r.thrown}</b><span>thrown</span></div>
-      <div><b>${r.landed}</b><span>landed</span></div>
-      <div><b>${r.blocked}</b><span>blocked</span></div>
-      <div><b>${r.knockdowns}</b><span>knockdowns</span></div>
-    </div>
-    <div class="label">Level 1 <span class="soon">0 / 100 XP</span></div>
-    <div class="bar"><i style="width:0%"></i></div>
-    ${STATS.map((n) => `<div class="stat"><span>${n}</span><div class="pips">${'<i class="on"></i>'.repeat(STAT_PLACEHOLDER)}${'<i></i>'.repeat(STAT_MAX - STAT_PLACEHOLDER)}</div><button disabled aria-label="Add a point to ${n}">+</button></div>`).join('')}
-    <div class="note">Placeholder: leveling and points come later. 0 points to spend.</div>`;
+  Progress.panel.render(panel, f, {
+    name: f === red ? 'Red' : 'Blue',
+    style: STYLE[f.key],
+    role: f === red ? 'download' : 'upload',
+    traffic: fmt(speed[f.key]),
+    pct: Math.round(100 * power(f)),
+    status: f === leader ? 'Leading' : leader ? 'Trailing' : 'Even',
+    record: f.record,
+  });
 }
 
-panel.addEventListener('click', (e) => {
-  const b = e.target.closest('button');
-  if (b && b.hasAttribute('data-close')) closePanel();
-});
+panel.addEventListener('click', (e) => Progress.panel.click(e, panelF, closePanel, renderPanel));
 
 // The panel needs room above the fighter, so the window grows to full height
 // while it is open.
@@ -2928,6 +3074,13 @@ function stepFightTest(dt) {
     const info = canStep(red) && canStep(blue) ? ` d=${Math.abs(red.x - blue.x).toFixed(0)} engage=${ENGAGE.toFixed(0)} len=${stepLength(red).toFixed(0)}/${stepLength(blue).toFixed(0)} states=${red.state}/${blue.state} leader=${leader ? leader.key : 'none'} x=${red.x.toFixed(0)}/${blue.x.toFixed(0)} W=${W} ${fighters.map(dbgFighter).join(' ')}` : ' nostep';
     invoke('showcase_mark', { label: `BOTH ${['red-leads', 'blue-leads', 'close'][phase]}${info}` }).catch(() => {});
     invoke('showcase_mark', { label: `TRACE ${footTrace.splice(0).join(';')}` }).catch(() => {});
+    // Stamina per fighter; spent (own strikes and steps) and taken (from the
+    // opponent's strikes) are cumulative, for tools/leveling_check.py.
+    const st = (f) => {
+      const b = buildOf(f);
+      return `${f.key}[st=${f.stamina.toFixed(0)}/${f.staminaMax} r=${staminaRatio(f).toFixed(2)} g=${f.gassed ? 1 : 0} b=${b.speed},${b.stamina},${b.strength} lv=${fighterLevel(f)} spent=${f.spent.toFixed(0)} taken=${f.taken.toFixed(0)}]`;
+    };
+    invoke('showcase_mark', { label: `STAMINA ${fighters.map(st).join(' ')}` }).catch(() => {});
   }
 }
 const SHOW_MOVES = ['jab', 'cross', 'elbow', 'uppercut', 'knee', 'lowKick', 'frontKick', 'teep', 'highKick', 'spinKick', 'sweep', 'palm', 'spinFist'];
@@ -2992,6 +3145,7 @@ window.addEventListener('resize', resize);
 resize();
 
 listen('net', (e) => {
+  Progress.onNet(e.payload); // XP from the cumulative byte totals
   if (FIGHT_TEST || SHOWCASE) return; // test modes set their own traffic
   // Smooth over about two seconds so the leader does not flicker.
   speed.down += (e.payload.down - speed.down) * 0.3;
@@ -3018,6 +3172,7 @@ function frameBody() {
   hoverScale += (slowTarget - hoverScale) * Math.min(1, realDt * 6);
   const scale = Math.min(timeScale(realDt), hoverScale);
   const dt = realDt * scale;
+  Progress.tick(realDt);
   const frozen = stop > 0;
   if (frozen) {
     stop -= dt;
@@ -3045,6 +3200,7 @@ function frameBody() {
 }
 
 (async function start() {
+  await Progress.init();
   try {
     const mode = await invoke('showcase');
     FIGHT_TEST = mode === 'fight';

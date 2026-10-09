@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    path::PathBuf,
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
@@ -10,14 +12,53 @@ use sysinfo::Networks;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewWindow,
 };
 
-/// Bytes per second, summed over every non-loopback interface.
+/// Bytes per second, summed over every non-loopback interface, plus the raw
+/// byte totals counted since the app started.
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct NetSpeed {
     down: f64,
     up: f64,
+    down_total: f64,
+    up_total: f64,
+}
+
+/// The last progress JSON the page stored; written to disk on exit.
+#[derive(Default)]
+struct SavedProgress(Mutex<String>);
+
+fn progress_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("progress.json"))
+}
+
+fn write_progress(app: &AppHandle, json: &str) -> Result<(), String> {
+    let path = progress_path(app)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Contents of progress.json in the app data directory, or empty.
+#[tauri::command]
+fn load_progress(app: AppHandle) -> String {
+    progress_path(&app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+/// Keeps the string in memory (for the exit write) and writes the file.
+#[tauri::command]
+fn save_progress(app: AppHandle, state: State<SavedProgress>, json: String) -> Result<(), String> {
+    *state.0.lock().map_err(|e| e.to_string())? = json.clone();
+    write_progress(&app, &json)
 }
 
 /// Cursor position in CSS pixels relative to the overlay window.
@@ -96,6 +137,13 @@ fn showcase() -> String {
     std::env::var("NETBATTLE_SHOWCASE").unwrap_or_default()
 }
 
+/// Debug: NETBATTLE_BUILD gives the test fighters skill points, for example
+/// "red=10,0,0;blue=0,10,5" (speed, stamina, strength). See docs/leveling-spec.md.
+#[tauri::command]
+fn test_build() -> String {
+    std::env::var("NETBATTLE_BUILD").unwrap_or_default()
+}
+
 /// Debug: log when a showcase move starts, with wall-clock milliseconds, so a
 /// screen recording can be cut into one piece per move.
 #[tauri::command]
@@ -127,6 +175,7 @@ fn spawn_net_monitor(app: AppHandle) {
             eprintln!("interface: {name}");
         }
         let mut last = Instant::now();
+        let (mut down_total, mut up_total) = (0u64, 0u64);
         loop {
             thread::sleep(Duration::from_millis(500));
             networks.refresh(true);
@@ -140,11 +189,15 @@ fn spawn_net_monitor(app: AppHandle) {
                 down += data.received();
                 up += data.transmitted();
             }
+            down_total += down;
+            up_total += up;
             let _ = app.emit(
                 "net",
                 NetSpeed {
                     down: down as f64 / secs,
                     up: up as f64 / secs,
+                    down_total: down_total as f64,
+                    up_total: up_total as f64,
                 },
             );
         }
@@ -152,8 +205,9 @@ fn spawn_net_monitor(app: AppHandle) {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![cursor_pos, set_click_through, set_view, showcase, showcase_mark])
+    let app = tauri::Builder::default()
+        .manage(SavedProgress::default())
+        .invoke_handler(tauri::generate_handler![cursor_pos, set_click_through, set_view, showcase, showcase_mark, test_build, load_progress, save_progress])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
@@ -178,6 +232,17 @@ fn main() {
             spawn_net_monitor(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running NetBattle");
+        .build(tauri::generate_context!())
+        .expect("error while building NetBattle");
+
+    // The tray Quit item (app.exit) and closing the last window both end here.
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            let state = handle.state::<SavedProgress>();
+            let json = state.0.lock().map(|g| g.clone()).unwrap_or_default();
+            if !json.is_empty() {
+                let _ = write_progress(handle, &json);
+            }
+        }
+    });
 }

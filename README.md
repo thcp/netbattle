@@ -66,6 +66,14 @@ There is no packaged release yet. For now, build it from source (see [For develo
 - **Bullet time** with afterimages on big kicks and slow-motion dodges.
 
 
+### <img src="imgs/readme/gauge.svg" width="22" align="top" alt=""> Levels and stamina
+
+- **Each fighter levels up on its own traffic:** red on download, blue on upload. Level 1 costs 5 GiB, level 2 costs 10 GiB, and so on up to level 10 (50 GiB). After that it gets harder. Max level is 20, about 1,870 GiB in total.
+- **Each level gives 1 skill point.** Fighters start with none. Spend them on **Speed** (faster strikes, better dodges), **Stamina** (a bigger bar, harder to knock down) and **Strength** (drains the opponent's stamina faster). Spending is permanent, 10 points per stat at most.
+- **Stamina is a bar under each fighter.** Strikes and hits drain it. At zero a fighter cannot attack.
+- **A knockout costs a point.** If a fighter with no stamina takes a heavy hit, it goes down and loses 1 allocated point, then is protected for 15 minutes. There is no easy mode.
+
+
 <a name="what-you-can-do"></a>
 
 ## <img src="imgs/readme/grid.svg" width="26" align="top" alt=""> What you can do
@@ -73,7 +81,7 @@ There is no packaged release yet. For now, build it from source (see [For develo
 ### <img src="imgs/readme/sliders.svg" width="22" align="top" alt=""> Play with them
 
 - **Hover** over a fighter to slow the fight down.
-- **Keep hovering for 2 seconds** to open its info panel: live traffic, who leads, and this session's strikes thrown, landed and blocked. Level and stats (agility, stamina, strength) are placeholders for now.
+- **Keep hovering for 2 seconds** to open its info panel: live traffic, who leads, and this session's strikes thrown, landed and blocked. It also shows its level, XP, stamina and skill points.
 - **Drag** either fighter anywhere on screen. Let go and it falls back onto the taskbar.
 - **Clicks pass through** everywhere except the fighters, so they never get in the way of your work.
 - **Quit** from the tray icon.

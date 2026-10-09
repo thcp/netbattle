@@ -145,10 +145,64 @@
         font: inherit;
         line-height: 1;
       }
+      #info .stat button:not(:disabled) {
+        border-color: var(--accent);
+        color: #ececf1;
+        cursor: pointer;
+      }
+      #info .stat button:not(:disabled):hover {
+        background: var(--accent);
+      }
       #info .note {
-        margin-top: 10px;
+        margin-top: 8px;
         color: #7d7d89;
         font-size: 11px;
+      }
+      #info .note.prot {
+        color: #7fd1ff;
+      }
+      /* Floating text above a fighter: level-ups and knockout losses. */
+      #floats {
+        position: fixed;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        z-index: 9;
+      }
+      #floats .float {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+      #floats .float span {
+        display: block;
+        transform: translateX(-50%);
+        white-space: nowrap;
+        font: 800 15px 'Segoe UI', system-ui, sans-serif;
+        text-shadow: 0 0 3px #000, 0 1px 2px #000;
+        animation: floatup 2s ease-out forwards;
+      }
+      #floats .float span.level {
+        color: #ffd54f;
+      }
+      #floats .float span.loss {
+        color: #ff5252;
+      }
+      @keyframes floatup {
+        0% {
+          opacity: 0;
+          margin-top: 10px;
+        }
+        12% {
+          opacity: 1;
+        }
+        70% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+          margin-top: -24px;
+        }
       }
       .sprite {
         position: fixed;
@@ -161,6 +215,7 @@
   </head>
   <body>
     <div id="info" hidden></div>
+    <script src="progression.js"></script>
     <script src="main.js"></script>
   </body>
 </html>
