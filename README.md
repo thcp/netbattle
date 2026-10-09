@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/version-0.1.0-2e3942?style=flat-square" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/Windows-supported-0078D4?style=flat-square&logo=windows&logoColor=white" alt="Windows: supported">
   <img src="https://img.shields.io/badge/macOS-planned-999999?style=flat-square&logo=apple&logoColor=white" alt="macOS: planned">
-  <img src="https://img.shields.io/badge/license-MIT-2e3942?style=flat-square" alt="License: MIT">
+  <img src="https://img.shields.io/badge/license-AGPL%203.0-2e3942?style=flat-square" alt="License: AGPL 3.0">
   <img src="https://img.shields.io/badge/Tauri-2-24C8D8?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2">
 </div>
 
@@ -135,4 +135,4 @@ NetBattle is a **[Tauri 2](https://tauri.app)** app. The Rust side samples netwo
 
 ## <img src="imgs/readme/shield.svg" width="26" align="top" alt=""> License
 
-[MIT](LICENSE).
+[GNU AGPL 3.0](LICENSE). Anyone who runs a modified version as a network service must publish their source.
