@@ -60,6 +60,11 @@ Set `NETBATTLE_SHOWCASE` before starting the app (`npx tauri dev`, output to a l
 | `fight` | The real fight AI with fake traffic. Logs STRIKE, IMPACT, TRACE and BOTH |
 | `contact` | Each strike starts at contact distance and freezes 0.5 s at impact |
 
+Option `traffic=real` (inside `NETBATTLE_BUILD`, for example `NETBATTLE_BUILD="traffic=real"`) replaces the three fixed
+traffic phases with noisy traffic like a real connection (each side wanders between 5 KB/s and 2 MB/s). It found standoffs the
+fixed phases never show: run it for 5 minutes and look at the `STALL` marks (no strike for 5 s in range, with both fighters'
+state) and at `STEPSTART`, `STEPEND` and `STEPBLOCK` marks.
+
 Checks, run on a 3 minute `fight` log:
 
 | Script | Reports |

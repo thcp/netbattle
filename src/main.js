@@ -549,8 +549,7 @@ function continueCombo(me, opp) {
   if (canStep(me) && !me.comboStepped && stepInFits(me, opp, d)) {
     me.comboStepped = true;
     me.comboUntil = fightClock + STEP_TIME / tempo(me) + COMBO_WAIT;
-    startStep(me, 1, 'combo');
-    return true;
+    if (startStep(me, 1, 'combo')) return true;
   }
   restAfterCombo(me, opp);
   return false;
@@ -860,6 +859,11 @@ function update(me, opp, dt) {
   if (me.timer > 0) {
     me.timer -= dt;
     if (me.timer > 0) return;
+    if (me.state === 'step' && FIGHT_TEST && me.stepX0 != null) {
+      const o = me === red ? blue : red;
+      invoke('showcase_mark', { label: `STEPEND ${me.key} ${me.char} dir=${me.stepDir} why=${me.stepWhy} dx=${(me.x - me.stepX0).toFixed(0)} face=${me.face} d=${Math.abs(o.x - me.x).toFixed(0)} frame=${me.curFrame} clipLen=${me.curClip ? me.curClip.frames.length : '-'}` }).catch(() => {});
+      me.stepX0 = null;
+    }
     if (me.state === 'down') {
       // A knockout adds koExtra to the time it takes to get up.
       me.state = 'rise';
@@ -956,16 +960,14 @@ function decide(me, opp, dt) {
     if (Math.abs(d - want) > STEP_MIN && Math.random() < dt * 3) {
       const dir = d > want ? 1 : -1;
       if (dir < 0 || stepInFits(me, opp, d)) {
-        startStep(me, dir, 'want');
-        return;
+        if (startStep(me, dir, 'want')) return; // a blocked step must not stop the fighter from attacking
       }
     } else if (opp.state !== 'attack' && Math.random() < dt * 0.8) {
       // Rhythm: fighters never stand frozen; they step in and out around
       // their distance, as boxers do between exchanges.
       const dir = d > want ? 1 : -1;
       if (dir < 0 || stepInFits(me, opp, d)) {
-        startStep(me, dir, 'rhythm');
-        return;
+        if (startStep(me, dir, 'rhythm')) return;
       }
     }
   } else if (!canStep(me)) {
@@ -1036,6 +1038,8 @@ function pickScene(me, opp, d) {
 
 // Steps: dir +1 toward the opponent, -1 away. The body moves by the clip's own
 // foot travel (see paintSheet), so the legs always carry the movement.
+const STEP_NOPROGRESS = 8; // px: a step that moves the fighter less than this toward or away from the opponent changed nothing
+const STEP_BLOCK = 3.5; // s without stepping after two steps that changed nothing
 const STEP_TIME = 0.45; // seconds per push-step, about human speed
 const STEP_MIN = 14 * Z; // px off the wanted distance before a step is taken
 const canStep = (me) => !!(SHEETS[me.char] && SHEETS[me.char].stepF && SHEETS[me.char].stepB);
@@ -1063,9 +1067,33 @@ function stepInFits(me, opp, d) {
 }
 
 function startStep(me, dir, why) {
+  // Steps that change nothing: after two in a row that leave the distance to the
+  // opponent as it was, the fighter stops stepping for STEP_BLOCK s. Without it,
+  // a fighter stepping in place made the other wait for ever ("never strike a
+  // stepping opponent"): a standoff of 10 to 16 s seen with noisy traffic.
+  if (!swap && !SHOWCASE) {
+    const o = me === red ? blue : red;
+    const d = Math.abs(o.x - me.x);
+    if (fightClock < (me.stepBlock || 0)) return false;
+    // Distances at the last starts of steps (within 7 s). Four steps that never
+    // moved the fighter's distance by more than STEP_NOPROGRESS * 3 changed
+    // nothing, whether in place or in and out: block stepping for a while.
+    const hist = (me.stepHist || []).filter((h) => fightClock - h.t < 7);
+    hist.push({ t: fightClock, d });
+    me.stepHist = hist.slice(-4);
+    if (me.stepHist.length >= 4) {
+      const ds = me.stepHist.map((h) => h.d);
+      if (Math.max(...ds) - Math.min(...ds) < STEP_NOPROGRESS * 3) {
+        me.stepHist = [];
+        me.stepBlock = fightClock + STEP_BLOCK;
+        if (FIGHT_TEST) invoke('showcase_mark', { label: `STEPBLOCK ${me.key} d=${d.toFixed(0)} x=${me.x.toFixed(0)} ${why || ''}` }).catch(() => {});
+        return false;
+      }
+    }
+  }
   me.stepWhy = why || '';
   const to = me.x + me.face * dir * stepLength(me);
-  if (to < MARGIN || to > W - MARGIN) return;
+  if (to < MARGIN || to > W - MARGIN) return false;
   // Speed points (and tiredness) change the step time; the 0.3 to 0.9 s
   // settle between footwork steps stays (strikes and closing steps ignore it).
   me.stepTime = STEP_TIME / tempo(me);
@@ -1073,10 +1101,12 @@ function startStep(me, dir, why) {
   if (FIGHT_TEST) invoke('showcase_mark', { label: `STEPSTART ${me.key} dir=${dir} d=${Math.abs((me === red ? blue : red).x - me.x).toFixed(0)} x=${me.x.toFixed(0)} want=${(+me.want).toFixed(0)} ${me.stepWhy || '?'}` }).catch(() => {});
   me.state = 'step';
   me.stepDir = dir;
+  me.stepX0 = me.x;
   me.timer = me.stepTime;
   spendStamina(me, STEP_COST);
   me.stepClip = null; // a step right after a step starts fresh
   me.stepFrame = -1;
+  return true;
 }
 
 const FLIP_TIME = 2 * 560 / GRAVITY; // seconds in the air for vy = -560
@@ -2660,7 +2690,14 @@ async function loadSheets() {
       const widen = sheet[ps.widen].map((fr) => ({ ...fr, pin: 0 }));
       const close = ps.closeFrames.map((i) => ({ ...sheet[ps.close][i], pin: 1 }));
       sheet.stepF = widen.concat(close);
-      sheet.stepB = sheet.stepF.slice().reverse(); // rear foot back first, then the lead follows
+      // The back step is the forward step reversed (rear foot back first, then the
+      // lead follows). Each transition keeps the planted foot of the forward
+      // transition it undoes, which is the pin of the frame it comes from: with the
+      // pins left on their own frames the back step moved only half as far (net 9
+      // to 12 art px against 18 to 21 forward), so a fighter stepping out stayed
+      // too close, kept stepping and the other waited (standoffs of 10 to 16 s).
+      const back = sheet.stepF.slice().reverse();
+      sheet.stepB = back.map((fr, j) => (j === 0 ? fr : { ...fr, pin: back[j - 1].pin }));
     }
     if (sheet.stance) for (const c of owners) SHEETS[c] = sheet;
   }
@@ -2978,7 +3015,7 @@ function paintSheet(me, sp, sheet) {
     const r = sp.ox + (x + col(f.low[0])) * PIX;
     const q = sp.ox + (x + col(f.low[1])) * PIX;
     const fr = me.state === 'walk' ? me.walkFrame : me.curClip ? me.curFrame : -1;
-    footTrace.push(`${me.leaving ? 'L' + me.leaverId : ''}${me.slot[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${fr}`);
+    footTrace.push(`${me.leaving ? 'L' + me.leaverId : ''}${me.slot[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${fr},${Math.round(me.x)}`);
   }
   a.save();
   if (fx < 0) {
