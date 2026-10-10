@@ -475,7 +475,7 @@ const isKick = (name) => !!name && KICKS.has(MOVES[name].limb);
 
 // How many strikes follow the first: more with more traffic, more for the leader.
 function comboExtra(me, opp, planned) {
-  if (outclassed(me, opp)) return 0;
+  if (outclassed(me, opp) && !personality(me).alwaysCombo) return 0;
   const p = 0.2 + 0.45 * power(me) + (me === leader ? 0.15 : 0) - (opp === leader ? 0.1 : 0) + personality(me).comboBonus;
   let n = planned;
   while (n < 4 && Math.random() < p) n++;
@@ -548,7 +548,7 @@ function continueCombo(me, opp) {
   if (canStep(me) && !me.comboStepped && stepInFits(me, opp, d)) {
     me.comboStepped = true;
     me.comboUntil = fightClock + STEP_TIME / tempo(me) + COMBO_WAIT;
-    startStep(me, 1);
+    startStep(me, 1, 'combo');
     return true;
   }
   restAfterCombo(me, opp);
@@ -606,24 +606,21 @@ function fmt(bps) {
 const CHAR_INFO = {
   red: { folder: 'down', name: 'Red', style: 'Muay Thai', color: '#e53935', shade: '#a32420', trail: '#ff8a80' },
   blue: { folder: 'up', name: 'Blue', style: 'Karate', color: '#1e88e5', shade: '#11589c', trail: '#90caf9' },
-  thales: { folder: 'thales', name: 'Thales', style: 'Muay Thai', color: '#555b66', shade: '#33373e', trail: '#c7ccd6', outline: 'rgba(255, 255, 255, 0.85)' },
+  thales: { folder: 'thales', name: 'Thales', style: 'Kickboxing', color: '#555b66', shade: '#33373e', trail: '#c7ccd6', outline: 'rgba(255, 255, 255, 0.85)' },
   red2: { folder: 'down', name: 'Red 2', style: 'Muay Thai', color: '#e53935', shade: '#a32420', trail: '#ff8a80', art: 'red' },
 };
 const artOf = (char) => (CHAR_INFO[char] && CHAR_INFO[char].art) || char;
 const ARROW = { down: '↓', up: '↑' };
 
-// Thales (docs/thales-spec.md): his favourite sequences, heaviest first, plus
-// single openers so every distance has a strike. Only moves he has clips for.
+// Thales (docs/thales-spec.md), a kickboxer who always throws combos: every
+// entry has 3 or more strikes (owner: "3 attacks combos"), heaviest first. Only moves he has clips for.
 const THALES_COMBOS = [
   { seq: ['cross', 'hook', 'uppercut'], range: 'mid', w: [3, 3.5] },
-  { seq: ['cross', 'hook'], range: 'mid', w: [2, 2.5] },
   { seq: ['cross', 'hook', 'uppercut', 'frontKickHead'], range: 'mid', w: [2, 3] },
-  { seq: ['frontKickHead'], range: 'far', w: [2, 2] },
-  { seq: ['lowKickRetreat', 'cross'], range: 'mid', w: [1.5, 1.5] },
-  { seq: ['lowKick'], range: 'mid', w: [1, 1] },
-  { seq: ['cross'], range: 'mid', w: [0.6, 0.4] },
-  { seq: ['hook', 'uppercut'], range: 'close', w: [0.6, 0.8] },
-  { seq: ['uppercut'], range: 'close', w: [0.4, 0.4] },
+  { seq: ['cross', 'hook', 'frontKickHead'], range: 'far', w: [2, 2] },
+  { seq: ['lowKickRetreat', 'cross', 'hook'], range: 'mid', w: [1.5, 1.5] },
+  { seq: ['lowKick', 'cross', 'hook'], range: 'mid', w: [1, 1] },
+  { seq: ['hook', 'uppercut', 'cross'], range: 'close', w: [1, 1.2] },
 ];
 // Style belongs to the character (roster spec, decision 4). cool scales the
 // pause after a combo, comboBonus is added to the chance of each extra strike,
@@ -631,7 +628,7 @@ const THALES_COMBOS = [
 const PERSONALITY = {
   red: { cool: 1, comboBonus: 0, combos: null },
   blue: { cool: 1, comboBonus: 0, combos: null },
-  thales: { cool: 0.6, comboBonus: 0.15, combos: THALES_COMBOS },
+  thales: { cool: 0.6, comboBonus: 0.15, combos: THALES_COMBOS, alwaysCombo: true },
 };
 const personality = (me) => PERSONALITY[artOf(me.char)] || PERSONALITY.red;
 // A character's combo table, without the sequences that need a clip it does
@@ -829,8 +826,8 @@ function update(me, opp, dt) {
   me.flash -= dt;
   stepStamina(me, dt);
   if (me.state === 'drag' || me.state === 'scene') return;
-  // Roster swap: the leaving and the arriving fighter only run (see Roster).
-  if (me.state === 'exit' || me.state === 'enter') return stepSwapRun(me, opp, dt);
+  // Roster swap: walking and showing respect (see Roster).
+  if (SWAP_STATES.has(me.state)) return stepSwapBody(me, opp, dt);
 
   if (me.airborne) {
     me.vy += GRAVITY * dt;
@@ -854,7 +851,9 @@ function update(me, opp, dt) {
   me.y = ground();
   me.x += me.vx * dt;
   me.vx *= Math.exp(-FRICTION * dt);
-  me.x = clamp(me.x, MARGIN, W - MARGIN);
+  // A newcomer that stopped by the edge waits there until the winner made
+  // room and it walks on (clamping it popped it onto the winner: 0 px apart).
+  if (!(swap && me === swap.f && swap.phase === 'walk')) me.x = clamp(me.x, MARGIN, W - MARGIN);
 
   if (me.state === 'attack') return stepAttack(me, opp, dt);
   if (me.timer > 0) {
@@ -889,7 +888,7 @@ function decide(me, opp, dt) {
     // run when far apart.
     if (canStep(me) && d < ENGAGE * 2 && oppFree && (leader === me || leader === null)) {
       me.state = 'guard';
-      if (Math.random() < dt * 4 && stepInFits(me, opp, d)) startStep(me, 1);
+      if (Math.random() < dt * 4 && stepInFits(me, opp, d)) startStep(me, 1, 'approach');
       return;
     }
     if (leader === me && oppFree) {
@@ -914,7 +913,7 @@ function decide(me, opp, dt) {
       // when no step fits (the bodies may not overlap).
       if (d > 50 * Z + 8) {
         if ((me.stepRest || 0) > 0) return;
-        if (stepInFits(me, opp, d)) startStep(me, 1);
+        if (stepInFits(me, opp, d)) startStep(me, 1, 'ground');
         else me.groundDone = true;
         return;
       }
@@ -933,7 +932,7 @@ function decide(me, opp, dt) {
   // edge, the fighter pressing it gives ground so the fight drifts to open space.
   const oppWall = opp.face > 0 ? opp.x - MARGIN : W - MARGIN - opp.x;
   if (oppWall < 120 * Z) {
-    if (canStep(me)) { if ((me.stepRest || 0) <= 0 && Math.random() < dt * 3) startStep(me, -1); }
+    if (canStep(me)) { if ((me.stepRest || 0) <= 0 && Math.random() < dt * 3) startStep(me, -1, 'corner'); }
     else me.x -= me.face * 45 * dt;
   }
   // Footwork: every 1 to 2.5 s pick a new distance to work from. The stronger
@@ -956,7 +955,7 @@ function decide(me, opp, dt) {
     if (Math.abs(d - want) > STEP_MIN && Math.random() < dt * 3) {
       const dir = d > want ? 1 : -1;
       if (dir < 0 || stepInFits(me, opp, d)) {
-        startStep(me, dir);
+        startStep(me, dir, 'want');
         return;
       }
     } else if (opp.state !== 'attack' && Math.random() < dt * 0.8) {
@@ -964,7 +963,7 @@ function decide(me, opp, dt) {
       // their distance, as boxers do between exchanges.
       const dir = d > want ? 1 : -1;
       if (dir < 0 || stepInFits(me, opp, d)) {
-        startStep(me, dir);
+        startStep(me, dir, 'rhythm');
         return;
       }
     }
@@ -1003,12 +1002,13 @@ function decide(me, opp, dt) {
         const ideal = strikeIdeal(me, opp, c.seq[0]);
         if (ideal != null && (best === null || Math.abs(d - ideal) < Math.abs(d - best))) best = ideal;
       }
-      if (best !== null && d > best) { if (stepInFits(me, opp, d)) startStep(me, 1); }
-      else if (best !== null) startStep(me, -1);
+      if (best !== null && d > best) { if (stepInFits(me, opp, d)) startStep(me, 1, 'nostrike-in'); }
+      else if (best !== null) startStep(me, -1, 'nostrike-out');
     }
     return;
   }
-  me.queue = outclassed(me, opp) ? [] : seq.slice(1); // no combos when outclassed
+  // No combos when outclassed, except for Thales, who always throws his combo.
+  me.queue = outclassed(me, opp) && !personality(me).alwaysCombo ? [] : seq.slice(1);
   me.comboLeft = comboExtra(me, opp, me.queue.length);
   me.comboStepped = false;
   startMove(me, opp, MOVES[seq[0]]);
@@ -1061,13 +1061,15 @@ function stepInFits(me, opp, d) {
   return d - stepLength(me) >= MIN_GAP;
 }
 
-function startStep(me, dir) {
+function startStep(me, dir, why) {
+  me.stepWhy = why || '';
   const to = me.x + me.face * dir * stepLength(me);
   if (to < MARGIN || to > W - MARGIN) return;
   // Speed points (and tiredness) change the step time; the 0.3 to 0.9 s
   // settle between footwork steps stays (strikes and closing steps ignore it).
   me.stepTime = STEP_TIME / tempo(me);
   me.stepRest = me.stepTime + 0.3 + Math.random() * 0.6;
+  if (FIGHT_TEST) invoke('showcase_mark', { label: `STEPSTART ${me.key} dir=${dir} d=${Math.abs((me === red ? blue : red).x - me.x).toFixed(0)} x=${me.x.toFixed(0)} want=${(+me.want).toFixed(0)} ${me.stepWhy || '?'}` }).catch(() => {});
   me.state = 'step';
   me.stepDir = dir;
   me.timer = me.stepTime;
@@ -1088,6 +1090,7 @@ function startFlip(me, landX) {
 }
 
 function startMove(me, opp, m) {
+  lastStrikeClock = fightClock;
   me.state = 'attack';
   me.move = m;
   me.atkT = 0;
@@ -1237,7 +1240,7 @@ function stepAttack(me, opp, dt) {
   // Thales's low kick lands behind him: a step back, then the combo goes on
   // with the opposite-hand straight from the new distance.
   if (m === MOVES.lowKickRetreat && me.comboLeft > 0 && canStep(me) && opp.state !== 'down' && !opp.airborne) {
-    startStep(me, -1);
+    startStep(me, -1, 'retreat');
     me.comboUntil = fightClock + STEP_TIME + COMBO_WAIT + 0.4;
     me.cool = 0;
     return;
@@ -1309,7 +1312,8 @@ function impact(me, opp, m) {
     opp.timer = Math.min(opp.timer + 0.3, 1.2);
     return;
   }
-  if (!inReach(Math.abs(opp.x - me.x)) || opp.airborne || ['drag', 'down', 'scene', 'exit', 'enter'].includes(opp.state)) return;
+  // No strike lands during a roster swap (nobody fights then).
+  if (!inReach(Math.abs(opp.x - me.x)) || opp.airborne || swap || SWAP_STATES.has(opp.state) || ['drag', 'down', 'scene'].includes(opp.state)) return;
   const at = me.sk[m.limb];
   if (opp.state === 'sway' || opp.state === 'duck' || opp.state === 'hop' || opp.state === 'bend') {
     opp.cool = Math.min(opp.cool, 0.15); // a clean dodge opens a counter
@@ -1735,7 +1739,8 @@ const SCENES = {
 // Grounded fighters never stand inside each other.
 function separate() {
   if (scene || red.airborne || blue.airborne || red.state === 'drag' || blue.state === 'drag') return;
-  if (SWAP_STATES.has(red.state) || SWAP_STATES.has(blue.state)) return; // runners may cross
+  // During a swap the walks stop short of the other body; a push here would slide the feet.
+  if (swap || SWAP_STATES.has(red.state) || SWAP_STATES.has(blue.state)) return;
   const dx = blue.x - red.x;
   const sprites = !!SHEETS[red.char];
   const gap = (sprites ? MIN_GAP * 0.8 : 34 * Z) - Math.abs(dx);
@@ -1756,7 +1761,7 @@ const SPRING = {
   block: [550, 0.7], blockLow: [550, 0.7], bend: [300, 0.7], sway: [450, 0.65], duck: [450, 0.65], hop: [500, 0.6],
   run: [700, 0.75], rest: [120, 0.8], taichi: [35, 1], drag: [70, 0.18], air: [200, 0.5],
   land: [350, 0.6], guard: [220, 0.7], flip: [600, 0.7], scene: [700, 0.6],
-  exit: [700, 0.75], enter: [700, 0.75],
+  walk: [220, 0.7], respect: [220, 0.7],
 };
 
 function targetPose(me) {
@@ -1770,9 +1775,9 @@ function targetPose(me) {
       p.ft += swing * 0.7; p.bt += swing * 0.7; p.fs += swing; p.bs += swing; p.t += swing * 0.2;
       return p;
     }
-    case 'run':
-    case 'exit':
-    case 'enter': return mix(POSES.run1, POSES.run2, 0.5 + 0.5 * Math.sin(me.phase));
+    case 'run': return mix(POSES.run1, POSES.run2, 0.5 + 0.5 * Math.sin(me.phase));
+    case 'walk':
+    case 'respect': return POSES.guard;
     case 'rest': {
       const p = { ...POSES.rest };
       p.t += 4 * Math.sin(c * 6);
@@ -1810,11 +1815,11 @@ function animate(me, dt) {
   // How long the fighter has been in its current state, for one-shot clips.
   if (me.state !== me.lastState) { me.lastState = me.state; me.stateAge = 0; }
   else me.stateAge += dt;
-  if (me.state === 'run' || SWAP_STATES.has(me.state)) {
+  if (me.state === 'run') {
     // The run cycle keeps pace with the ground speed, so the stride stays the
-    // same length and the feet do not slide (a swap run is faster).
+    // same length and the feet do not slide.
     const before = Math.floor(me.phase / Math.PI);
-    me.phase += (dt * (SWAP_STATES.has(me.state) ? me.swapSpeed : runSpeed(me))) / 20;
+    me.phase += (dt * runSpeed(me)) / 20;
     if (Math.floor(me.phase / Math.PI) !== before) dust(me, me.x - me.face * 4, me.y, 2);
   }
   const target = targetPose(me);
@@ -1901,7 +1906,7 @@ function aimLimbs(me, opp, sk, fx) {
 // quick arcing step when the pose wants it somewhere else. A knocked-back
 // fighter skids on planted feet and steps to catch its balance.
 const STEP_AT = 9 * Z; // px between a planted foot and where the pose wants it
-const FREE_STATES = new Set(['run', 'drag', 'air', 'down', 'rise', 'flip', 'exit', 'enter']);
+const FREE_STATES = new Set(['run', 'drag', 'air', 'down', 'rise', 'flip', 'walk']);
 
 function footwork(me, sk, desired, dt, fx) {
   const floor = me.y;
@@ -2481,6 +2486,9 @@ const CLIP_FALLBACK = {
   frontKick: ['midKick', 'highKick'], teep: ['midKick', 'highKick'],
   uppercut: ['hookPro2', 'hook'], frontKickHead: ['highKickV3', 'highKick', 'midKick'],
   lowKickRetreat: ['lowKickV2', 'lowKick'], lowKickV2: ['lowKick'],
+  // The roster swap's walk: a 'walk' clip when a character has one, else red
+  // and blue's shuffleA walk cycle, else the run cycle at walking pace.
+  walk: ['shuffleA', 'run'],
 };
 const LOOP_FPS = { stance: 8, run: 12, hit: 10 };
 
@@ -2666,8 +2674,10 @@ const CLIP_CACHE = new Map();
 // Clips whose planted foot is not the one that moves least. Blue's duck steps
 // the rear foot back while the body drops: holding the front foot keeps his
 // body behind his own guard (holding the rear heel threw him into the
-// attacker by up to 36 px).
-const CLIP_ANCHOR = { blue: { duck: 'front', block: 'front' } };
+// attacker by up to 36 px). Blue's bow brings the rear foot up to the front
+// one in frame 1 (and back in frame 8): holding the rear foot moved both feet
+// 4 to 12 px in the trace.
+const CLIP_ANCHOR = { blue: { duck: 'front', block: 'front', bow: 'front' } };
 function clipFrames(me, name) {
   const sheet = SHEETS[me.char];
   if (!sheet || !name) return null;
@@ -2765,9 +2775,21 @@ function pickFrame(me, sheet) {
     case 'attack':
       return once(moveClip(me, moveName(me.move)), me.atkT / me.atkDur) || loop('stance');
     case 'run':
-    case 'exit':
-    case 'enter':
       return (sheet.run || sheet.stance)[Math.floor(me.phase / (Math.PI / 3)) % (sheet.run || sheet.stance).length];
+    case 'walk': {
+      // The frame walkTick reached; paintSheet places it from me.x.
+      const wd = walkData(me);
+      return wd ? wd.frames[(me.walkFrame || 0) % wd.n] : loop('stance');
+    }
+    case 'respect': {
+      // Plays once over its natural length, pinned like every one-shot clip.
+      const r = me.respectClip && once(me.respectClip, me.stateAge / (me.respectDur || RESPECT_HOLD));
+      if (r) return r;
+      // No respect clip yet: stand still in the stance's first frame.
+      const st = clipFrames(me, 'stance');
+      if (st) { me.loopAnchor = 'rear'; me.loopClip = st; me.loopPin = sheet.stance[0].low ? sheet.stance[0].low[0] : st.rearPins[0]; }
+      return sheet.stance[0];
+    }
     case 'hit':
       return once('hit', me.stateAge / 0.3) || loop('stance');
     case 'step':
@@ -2841,6 +2863,16 @@ function stepPlacement(me, sp, f, xPinned, mirrored) {
   return x;
 }
 
+// World x of the middle of a drawn frame's feet (xw = the art canvas's left edge).
+function feetMid(xw, frame, face) {
+  const col = (e) => (face < 0 ? frame.img.width - 1 - e : e);
+  return xw + ((col(frame.low[0]) + col(frame.low[1])) / 2) * PIX;
+}
+// Whole art px to move a frame about to be drawn at xw facing face, so its
+// feet stay centred where the last drawn frame (prev) had them: a turn
+// mirrors the body about its feet, not about the hip.
+const turnShift = (prev, xw, frame, face) => Math.round((feetMid(prev.xw, prev.frame, prev.face) - feetMid(xw, frame, face)) / PIX);
+
 // Draw the fighter's frame into its art canvas (1 sprite pixel = 1 art pixel).
 function paintSheet(me, sp, sheet) {
   const a = sp.actx;
@@ -2856,7 +2888,7 @@ function paintSheet(me, sp, sheet) {
   // the body, so the fighter never floats or slides.
   // The stance is pinned by its rear foot too, so hand-overs between clips
   // never shift the body.
-  const oneShot = ['attack', 'hit', 'down', 'rise', 'block', 'blockLow', 'sway', 'bend', 'duck', 'step'].includes(me.state)
+  const oneShot = ['attack', 'hit', 'down', 'rise', 'block', 'blockLow', 'sway', 'bend', 'duck', 'step', 'respect'].includes(me.state)
     && !!me.curClip;
   if (!oneShot) {
     me.anchor = 'rear';
@@ -2864,7 +2896,7 @@ function paintSheet(me, sp, sheet) {
     me.rearPinX = me.pinX;
     me.curClip = me.loopClip;
   }
-  const pinned = oneShot || ['guard', 'block', 'blockLow', 'sway', 'duck', 'bend', 'taichi', 'rest', 'land'].includes(me.state);
+  const pinned = oneShot || ['guard', 'block', 'blockLow', 'sway', 'duck', 'bend', 'taichi', 'rest', 'land', 'respect'].includes(me.state);
   const base = sheet.stance[0];
   if (pinned && base && !me.airborne) {
     const k = me.anchor === 'front' ? 'front' : 'rear';
@@ -2888,11 +2920,42 @@ function paintSheet(me, sp, sheet) {
         x = Math.round(x + shift / PIX);
       }
     }
+    // Turning during a roster swap: the mirror keeps the middle of the feet
+    // where it was (mirroring about the hip moved blue's off-centre feet 14 px).
+    if (swap && me.state !== 'step' && me.lastDraw && me.lastDraw.face !== me.face && me.lastDraw.frame.low && f.low) {
+      const turn = turnShift(me.lastDraw, sp.ox + x * PIX, f, me.face);
+      me.x += turn * PIX;
+      x += turn;
+    }
     if (me.state === 'step') x = stepPlacement(me, sp, f, x, mirrored);
     me.lastDraw = { xw: sp.ox + x * PIX, frame: f, face: me.face };
     me.lastRear = rearWorld(x, f);
     me.lastClip = me.curClip;
-  } else if ((me.state === 'run' || SWAP_STATES.has(me.state)) && !me.airborne) {
+  } else if (me.state === 'walk' && base && !me.airborne) {
+    // Walking: placed from me.x, which walkTick moves only when the frame
+    // changes and by exactly the planted foot's travel in the drawing, so
+    // that foot stays put. Starting a walk keeps the rear heel where the
+    // last frame drew it (me.x absorbs the difference, in whole art px), and
+    // the heel is remembered so stopping hands over without a jump.
+    const col = (e) => (fx < 0 ? img.width - 1 - e : e);
+    const heel = f.low ? f.low[0] : f.rear;
+    x = Math.round((me.x - sp.ox) / PIX - img.width / 2);
+    if (me.lastClip !== 'walk' && me.lastDraw && me.lastDraw.face !== me.face && me.lastDraw.frame.low && f.low) {
+      // Turned to walk off: keep the middle of the feet instead.
+      const turn = turnShift(me.lastDraw, sp.ox + x * PIX, f, me.face);
+      me.x += turn * PIX;
+      x += turn;
+    } else if (me.lastClip !== 'walk' && me.lastRear != null) {
+      const shift = Math.round((me.lastRear - (sp.ox + (x + col(heel)) * PIX)) / PIX);
+      if (Math.abs(shift * PIX) < 60 * Z) {
+        me.x += shift * PIX;
+        x += shift;
+      }
+    }
+    me.rearPinX = heel;
+    me.lastRear = sp.ox + (x + col(heel)) * PIX;
+    me.lastClip = 'walk';
+  } else if (me.state === 'run' && !me.airborne) {
     // Running is centred on the hip (the legs cycle), but its rear heel is
     // remembered so stopping hands over to the stance without a jump.
     const heel = f.feet.length ? f.feet[0][0] : f.rear;
@@ -2906,13 +2969,15 @@ function paintSheet(me, sp, sheet) {
   if (!pinned || !base || me.airborne) me.lastDraw = null;
   const y = Math.round((floorY - sp.oy) / PIX - foot - 1);
   me.labelY = sp.oy + (y + top) * PIX; // speed label sits above the sprite
-  if (FIGHT_TEST && f.low && !SWAP_STATES.has(me.state)) {
-    // Foot trace for validation: world x of both foot edges as drawn. Swap
-    // runs (and the body leaving the screen) are not fight footwork.
+  if (FIGHT_TEST && f.low) {
+    // Foot trace for validation: world x of both foot edges as drawn. A body
+    // walking off after a swap has its own key ('L' + slot), so its walk is
+    // checked too without mixing with the newcomer in the slot.
     const col = (e) => (fx < 0 ? img.width - 1 - e : e);
     const r = sp.ox + (x + col(f.low[0])) * PIX;
     const q = sp.ox + (x + col(f.low[1])) * PIX;
-    footTrace.push(`${me.slot[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${me.curClip ? me.curFrame : -1}`);
+    const fr = me.state === 'walk' ? me.walkFrame : me.curClip ? me.curFrame : -1;
+    footTrace.push(`${me.leaving ? 'L' + me.leaverId : ''}${me.slot[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${fr}`);
   }
   a.save();
   if (fx < 0) {
@@ -2969,7 +3034,8 @@ function render() {
       s.jy = jy;
       s.c.style.transform = `translate(${ox + jx}px, ${oy + jy - view.top}px)`;
     }
-    s.c.style.zIndex = f.state === 'attack' || f.state === 'scene' ? '2' : '1';
+    // A body walking off after a swap is drawn behind both fighters.
+    s.c.style.zIndex = f.leaving ? '0' : f.state === 'attack' || f.state === 'scene' ? '2' : '1';
     if (SHEETS[f.char]) paintSheet(f, s, SHEETS[f.char]);
     else paintFighter(f, s);
     if (f.ghostDue) {
@@ -3013,7 +3079,7 @@ const setCursor = (c) => { document.documentElement.style.cursor = c; };
 
 function fighterAt(x, y) {
   for (const f of [red, blue]) {
-    if (!f.sk || SWAP_STATES.has(f.state)) continue; // runners in a swap cannot be grabbed
+    if (!f.sk || swap || SWAP_STATES.has(f.state)) continue; // nobody is grabbed during a swap (it would stall it)
     const b = bounds(f.sk);
     if (x >= b.x - 6 && x <= b.x + b.w + 6 && y >= b.y - 6 && y <= b.y + b.h + 6) return f;
   }
@@ -3088,7 +3154,7 @@ let panelTimer = 0;
 for (const f of fighters) f.record = { thrown: 0, landed: 0, blocked: 0, knockdowns: 0 };
 
 // Style belongs to the character, not to the slot.
-const STYLE = { red: 'Muay Thai', blue: 'Karate', thales: 'Muay Thai', red2: 'Muay Thai' };
+const STYLE = { red: 'Muay Thai', blue: 'Karate', thales: 'Kickboxing', red2: 'Muay Thai' };
 
 function renderPanel() {
   const f = panelF;
@@ -3198,26 +3264,39 @@ async function pollCursor() {
 }
 
 // ---------- Roster ----------
-// docs/roster-spec.md: every knockout changes the fighter when a character
-// waits on the bench (first in, first out). The knocked-out character falls
-// and gets up as usual, then runs off toward the screen edge behind it
-// ('exit'). Once it is SWAP_HANDOFF of the way there, the next character runs
-// in from that same edge to the winner's fighting distance ('enter') and the
-// fight goes on. The winner holds its guard meanwhile; nobody strikes.
-const SWAP_STATES = new Set(['exit', 'enter']);
-const SWAP_MAX = 8; // s from the knockout to the fight going on (spec target)
-const SWAP_SLACK = 0.5; // s kept in hand under SWAP_MAX
-const SWAP_OFF = 110; // px past the screen edge where a runner is out of sight
-const SWAP_HANDOFF = 0.6; // share of the exit run after which the newcomer starts
+// docs/roster-spec.md, "Respect and walking": every knockout changes the
+// fighter when a character waits on the bench (first in, first out). Phases:
+//   down     the knocked-out fighter falls, lies and gets up; the winner guards
+//   approach both come to about RESPECT_GAP apart, facing each other (the
+//            loser walks or push-steps; nobody slides)
+//   respect1 both play the respect clip: touchGloves for two Muay Thai
+//            fighters, bow for any pairing with the karate fighter
+//   walk     the loser walks off toward one edge as a separate body (it can
+//            no longer hit or be hit); the newcomer walks in from the other
+//            edge to the winner's fighting distance
+//   respect2 winner and newcomer show respect; then guard, and the fight goes on
+// Nobody starts a strike and no strike lands from the knockout until respect2 ends.
+const SWAP_STATES = new Set(['walk', 'respect']);
+const SWAP_TOTAL = 14; // s from the knockout to the fight going on (owner accepts 12 to 15)
+const WALK_OFF = 70; // px past the screen edge where a walker is out of sight
+const WALK_SPEED = 120; // px/s: a plain walk, tuned by eye
+const WALK_MAX = 170; // px/s: only when a long entry would not fit in SWAP_TOTAL
+const RESPECT_GAP = 65; // px between hips for respect 1
+const RESPECT_TOL = 22; // px either side (a push-step covers 36 to 42 px)
+const RESPECT_FPS = 8; // respect clips play once at this frame rate
+const RESPECT_HOLD = 1.2; // s of standing still while a respect clip is missing
+const APPROACH_MAX = 5; // s: respect 1 starts anyway after this
+const SWAP_ABORT = 40; // s: a swap that hangs this long is ended (safety)
 // Every character that can fight, filtered at start to those whose sheets
 // loaded (a character without clips never enters). Thales joins once his
 // folder is in the sprite manifest.
 let ROSTER = ['red', 'blue', 'thales'];
 let bench = []; // waiting characters, first in line first
-let swap = null; // the swap under way: { f, winner, phase: 'down' | 'exit' | 'enter', ... }
+let swap = null; // the swap under way: { f, winner, phase, t0, real0, phaseT, side, want, ... }
 let FORCE_KO = 0; // test: seconds between forced knockouts, 0 = off
 let forceKoIn = 0;
-const leavers = []; // bodies running off screen after giving up their slot
+let leaverCount = 0;
+const leavers = []; // bodies walking off screen after giving up their slot
 const bodies = () => (leavers.length ? fighters.concat(leavers) : fighters);
 const swapMark = (text) => invoke('showcase_mark', { label: `SWAP ${text}` }).catch(() => {});
 
@@ -3234,6 +3313,22 @@ function parseRosterOptions(text) {
   }
   const k = parseFloat(opt('forceko'));
   if (k > 0) FORCE_KO = k;
+  REAL_TRAFFIC = /(?:^|;)\s*traffic=real/i.test(String(text || ''));
+}
+// Test option traffic=real: noisy traffic like a real connection (each side
+// wanders between 5 KB/s and 2 MB/s, new targets every 2 to 5 s), to look for
+// standoffs that the three fixed phases never show.
+let REAL_TRAFFIC = false;
+const realTraffic = { t: 0, down: 5e4, up: 5e4 };
+function stepRealTraffic(dt) {
+  realTraffic.t -= dt;
+  if (realTraffic.t <= 0) {
+    realTraffic.t = 2 + Math.random() * 3;
+    realTraffic.down = 10 ** (3.7 + Math.random() * 2.6);
+    realTraffic.up = 10 ** (3.7 + Math.random() * 2.6);
+  }
+  speed.down += (realTraffic.down - speed.down) * Math.min(1, dt * 0.8);
+  speed.up += (realTraffic.up - speed.up) * Math.min(1, dt * 0.8);
 }
 
 // A slot occupant becomes another character: everything drawn from the old
@@ -3272,79 +3367,290 @@ function applyRoster() {
   } catch (err) {
     console.error(err);
   }
+  // Owner's rule: the two on screen are always different characters, never
+  // one against its own debug copy (same art). A saved or listed pair that
+  // breaks it takes the first usable character of another art for 'up'.
+  if (sameArt(slots.down, slots.up)) {
+    const other = usable.find((c) => !sameArt(c, slots.down));
+    if (other) {
+      wait = [slots.up, ...wait.filter((c) => c !== other)];
+      slots = { down: slots.down, up: other };
+    }
+  }
   setChar(red, slots.down);
   setChar(blue, slots.up);
   bench = wait.filter((c, i, a) => usable.includes(c) && c !== slots.down && c !== slots.up && a.indexOf(c) === i);
   swapMark(`roster ${usable.join(',')} down=${red.char} up=${blue.char} bench=${bench.join(',') || '-'}`);
+  swapMark(`fight ${red.char} vs ${blue.char}`);
+  checkPair('roster');
 }
 
-// The distance the newcomer runs to: the winner's own fighting distance,
+// ----- Alternation (owner, 2026-10-10: "fighters must always alternate, they
+// can't fight themselves") -----
+const sameArt = (a, b) => artOf(a) === artOf(b);
+// The newcomer for a swap: the first on the bench (first in, first out) whose
+// art differs from both the winner's and the leaving character's. Null when
+// nobody qualifies: then there is no swap.
+function pickNewcomer(winnerChar, leaverChar) {
+  return bench.find((c) => c !== leaverChar && !sameArt(c, winnerChar) && !sameArt(c, leaverChar)) || null;
+}
+// Assertion: logs SWAP INVALID when the pair on screen breaks the rule
+// (once per pair, so a broken state does not flood the log).
+let invalidPair = '';
+function checkPair(where) {
+  const pair = `${red.char}/${blue.char}`;
+  if (!sameArt(red.char, blue.char)) { invalidPair = ''; return; }
+  if (invalidPair === pair) return;
+  invalidPair = pair;
+  swapMark(`INVALID same-art ${red.char} vs ${blue.char} at ${where}`);
+}
+
+// The distance the newcomer walks to: the winner's own fighting distance,
 // never closer than the bodies allow.
 const swapWant = (winner) => clamp(+winner.want || 46 * Z, MIN_GAP + 6 * Z, ENGAGE - 10);
+const swapMs = () => Math.round(performance.now() - swap.real0);
+const edgeX = (side) => (side > 0 ? W + WALK_OFF : -WALK_OFF);
+// Where the newcomer stops: the winner's distance on the entry side. Not
+// clamped: next to an edge the winner steps back until the spot is on screen.
+const newcomerSpot = () => swap.winner.x + swap.side * swap.want;
 
 // A knockout landed on victim: plan the swap, unless one is already under way
-// (a knockout during exit or enter is ignored) or nobody waits.
+// (a knockout during a swap is ignored) or nobody waits.
 function planSwap(victim, winner) {
-  if (swap || SHOWCASE || !bench.length) return;
+  if (swap || SHOWCASE) return;
   if (SWAP_STATES.has(victim.state) || SWAP_STATES.has(winner.state)) return;
-  swap = { f: victim, winner, phase: 'down', t0: fightClock, real0: performance.now() };
-  swapMark(`ko ${victim.char} slot=${victim.slot} by=${winner.char}`);
+  // Nobody on the bench may face this winner (all of the same art as the
+  // winner or the loser): no swap, the knockout ends as before the roster.
+  const next = pickNewcomer(winner.char, victim.char);
+  if (!next) {
+    swapMark(`skip no-candidate ko=${victim.char} by=${winner.char} bench=${bench.join(',')}`);
+    return;
+  }
+  swap = { f: victim, winner, next, phase: 'down', t0: fightClock, real0: performance.now(), phaseT: 0 };
+  swapMark(`ko ${victim.char} slot=${victim.slot} by=${winner.char} next=${next}`);
 }
 
-// decide() during a swap. True when the swap took the turn.
-function swapTurn(me, opp, dt) {
-  if (me === swap.f) {
-    if (swap.phase !== 'down') return false;
-    startExit(me, swap.winner); // up again: leave
-    return true;
-  }
-  // The winner: guard up, no new attack, facing the action.
-  me.state = 'guard';
-  me.queue = [];
-  me.comboLeft = 0;
-  me.comboUntil = 0;
-  setFace(me, Math.sign(opp.x - me.x) || me.face);
-  // Too close to the edge the newcomer comes from: give it room with
-  // push-steps (the same steps and rests as in the fight).
-  me.stepRest = (me.stepRest || 0) - dt;
-  if (swap.phase !== 'down' && canStep(me) && me.stepRest <= 0) {
-    const room = swap.dir > 0 ? W - MARGIN - me.x : me.x - MARGIN;
-    if (room < swapWant(me) + 10 * Z && Math.sign(opp.x - me.x) === swap.dir) startStep(me, -1);
-  }
-  return true;
+function swapPhase(name, text) {
+  swap.phase = name;
+  swap.phaseT = 0;
+  swapMark(`${name} t=${swapMs()} ${text || ''}`);
 }
 
-function startExit(me, winner) {
-  const dir = Math.sign(me.x - winner.x) || (me.x < W / 2 ? -1 : 1);
-  const edge = dir > 0 ? W + SWAP_OFF : -SWAP_OFF;
-  const want = swapWant(winner);
-  const exitLen = Math.abs(edge - me.x);
-  const enterLen = Math.abs(edge - clamp(winner.x + dir * want, MARGIN, W - MARGIN));
-  // Run speed: a jog when the way is short; faster when the whole swap would
-  // not fit in SWAP_MAX. The run cycle keeps pace (see animate).
-  const left = Math.max(1.5, SWAP_MAX - SWAP_SLACK - (fightClock - swap.t0));
-  const speed = Math.max(runSpeed(me), (SWAP_HANDOFF * exitLen + enterLen) / left);
-  Object.assign(swap, { phase: 'exit', dir, edge, startX: me.x, speed, want });
-  me.state = 'exit';
-  me.swapSpeed = speed;
-  me.timer = 0;
+// Nothing left over from the fight: no strike planned, no defence running.
+function calmDown(me) {
   me.vx = 0;
   me.queue = [];
   me.comboLeft = 0;
   me.comboUntil = 0;
-  setFace(me, dir);
-  swapMark(`exit ${me.char} slot=${me.slot} dir=${dir} run=${exitLen.toFixed(0)}+${enterLen.toFixed(0)} speed=${speed.toFixed(0)}`);
+  me.move = null;
+  me.defense = null;
 }
 
-// The leaving body goes on as a separate runner, so the slot can take the
-// newcomer while the leaver is still on screen.
+// ----- Walking -----
+// The walk clip plays as a loop, and the body moves only when the frame
+// changes, by exactly how far the planted foot moved back in the drawing:
+// that foot stays put on the floor, so nothing slides. Per frame i, adv[i] is
+// that move (art px) from frame i - 1, pin[i] the planted edge (0 rear, 1 front).
+// The walker may stop only on frames whose feet are as close as the stance's
+// (stop[i]), so handing over to the stance or a respect clip does not pop.
+// Logical clip 'walk'; red and blue use their shuffleA cycle (CLIP_FALLBACK).
+function walkData(me) {
+  const clip = clipFrames(me, 'walk');
+  if (!clip) return null;
+  if (clip.walk) return clip.walk;
+  const fr = clip.frames;
+  const n = fr.length;
+  const adv = [];
+  const pin = [];
+  for (let i = 0; i < n; i++) {
+    const p = fr[(i + n - 1) % n];
+    const a0 = p.low[0] - fr[i].low[0];
+    const a1 = p.low[1] - fr[i].low[1];
+    adv.push(Math.max(0, a0, a1));
+    pin.push(a0 >= a1 ? 0 : 1);
+  }
+  const base = SHEETS[me.char].stance[0].low;
+  const narrow = fr.map((f) => f.low[1] - f.low[0] <= base[1] - base[0] + 3);
+  const stop = narrow.some(Boolean) ? narrow : fr.map(() => true);
+  const cycle = Math.max(1, adv.reduce((a, b) => a + b, 0));
+  // heel[i]: art px the rear heel sits ahead of the stance's in frame i.
+  // Stopping hands over to the stance with the rear heel kept, so a stop on
+  // frame i leaves the body at me.x + face * heel[i] * PIX (see settleX).
+  const heel = fr.map((f) => f.low[0] - base[0]);
+  clip.walk = { frames: fr, n, adv, pin, stop, cycle, heel };
+  return clip.walk;
+}
+
+// Where a walker stopping on its current frame ends up once in its stance.
+const settleX = (me, wd) => me.x + me.face * wd.heel[me.walkFrame % wd.n] * PIX;
+
+// From stop frame i: art px the settled body moves to the next stop frame.
+// Counted from where the stance will stand, not from me.x: on red's frame 1
+// the rear heel has not moved yet, and a walk that stopped there made no
+// progress and repeated forever (a newcomer hung 40 s by the edge).
+function progressToStop(wd, i) {
+  let s = 0;
+  for (let k = 1; k <= wd.n; k++) {
+    const j = (i + k) % wd.n;
+    s += wd.adv[j];
+    if (wd.stop[j]) return s + wd.heel[j] - wd.heel[i];
+  }
+  return s;
+}
+
+// Start walking in direction dir at speed px/s. The clip's frame rate follows
+// the speed, so a stride covers the floor its drawing shows. to = world x to
+// stop near (never passing it by more than slack px), or null to walk on.
+function startWalk(me, dir, speed, to, slack) {
+  setFace(me, dir);
+  calmDown(me);
+  me.state = 'walk';
+  me.timer = 0;
+  me.walkTo = to;
+  me.walkSlack = slack || 0;
+  me.walkFrame = 0;
+  me.walkT = 0;
+  me.walkHold = false;
+  me.walkSpeed = speed;
+  const wd = walkData(me);
+  me.walkFps = wd ? (speed * wd.n) / (wd.cycle * PIX) : 0;
+}
+
+// One tick of walking. True when the walker reached walkTo and stopped.
+function walkTick(me, dt) {
+  me.y = ground();
+  me.vx = 0;
+  const wd = walkData(me);
+  if (!wd) {
+    // No walk clip at all (procedural fighter): move at the walking speed.
+    me.x += me.face * me.walkSpeed * dt;
+    return me.walkTo != null && (me.walkTo - me.x) * me.face <= 0;
+  }
+  me.walkT += dt * me.walkFps;
+  while (me.walkT >= 1) {
+    me.walkT -= 1;
+    me.walkFrame = (me.walkFrame + 1) % wd.n;
+    me.x += me.face * wd.adv[me.walkFrame] * PIX;
+    if (me.walkTo != null && wd.stop[me.walkFrame]) {
+      // Stop here when the next stopping frame would be no closer, or
+      // would pass the target by more than the slack (both measured where
+      // the stance will stand).
+      const r = (me.walkTo - settleX(me, wd)) * me.face;
+      const next = r - progressToStop(wd, me.walkFrame) * PIX;
+      if (next < -me.walkSlack || Math.abs(next) >= Math.abs(r)) {
+        me.walkT = 0;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The smallest distance a walk from a standstill moves the settled body
+// (to its first stop frame that gets anywhere).
+function firstWalkSpan(me) {
+  const wd = walkData(me);
+  if (!wd) return 0;
+  let s = 0;
+  for (let j = 1; j < wd.n; j++) {
+    s += wd.adv[j];
+    if (wd.stop[j] && s + wd.heel[j] - wd.heel[0] > 0) return (s + wd.heel[j] - wd.heel[0]) * PIX;
+  }
+  return (wd.cycle + 0) * PIX;
+}
+
+// ----- Respect -----
+// touchGloves when both are Muay Thai fighters, bow for any pairing with the
+// karate fighter. The clip plays once at RESPECT_FPS, pinned on its planted
+// foot like every one-shot clip; while it does not exist yet the fighter
+// stands still in its stance for RESPECT_HOLD.
+// Kickboxers and Muay Thai fighters touch gloves; any pairing with the karate fighter bows.
+const GLOVE_STYLES = new Set(['Muay Thai', 'Kickboxing']);
+const respectName = (a, b) => (GLOVE_STYLES.has(CHAR_INFO[a.char].style) && GLOVE_STYLES.has(CHAR_INFO[b.char].style) ? 'touchGloves' : 'bow');
+function startRespect(me, other) {
+  setFace(me, Math.sign(other.x - me.x) || me.face);
+  calmDown(me);
+  const name = respectName(me, other);
+  const clip = clipFrames(me, name);
+  me.state = 'respect';
+  me.respectClip = clip ? name : null;
+  me.respectDur = clip ? clip.frames.length / RESPECT_FPS : RESPECT_HOLD;
+  me.timer = me.respectDur;
+  return clip ? name : `${name}-missing`;
+}
+
+// decide() during a swap, for a slot occupant standing free. Always takes
+// the turn: nobody starts a strike until the swap is over.
+function swapTurn(me, opp, dt) {
+  calmDown(me);
+  me.state = 'guard';
+  me.stepRest = (me.stepRest || 0) - dt;
+  const loser = me === swap.f;
+  if (swap.phase === 'walk') {
+    if (loser) {
+      // The newcomer, arrived. When the winner stepped back to make room,
+      // it walks on to the new spot (a walk never passes it by more than slack).
+      setFace(me, Math.sign(opp.x - me.x) || me.face);
+      const slack = Math.max(0, swap.want - MIN_GAP - 4);
+      const r = (newcomerSpot() - me.x) * me.face;
+      if (me.stepRest <= 0 && r > 24 && r - firstWalkSpan(me) >= -slack) startWalk(me, me.face, WALK_SPEED, newcomerSpot(), slack);
+      return true;
+    }
+    // The winner watches the loser go until the newcomer is in view, then
+    // faces it. Too close to the newcomer's edge, it first walks a few
+    // strides away from that edge (behind the loser, who walks the same way):
+    // push-steps back were too short (blue's nets about 6 px), the first
+    // swap with Thales waited 30 s.
+    // Also when the newcomer stopped outside the margins and is too close for
+    // one more stride: then the winner moves away by at least a stride.
+    const n = swap.f;
+    const room = swap.side > 0 ? W - MARGIN - me.x : me.x - MARGIN;
+    const blocked = n.state === 'guard' && (n.x < MARGIN || n.x > W - MARGIN);
+    if ((room < swap.want + 10 * Z || blocked) && me.stepRest <= 0) {
+      let to = swap.side > 0 ? W - MARGIN - swap.want - 20 * Z : MARGIN + swap.want + 20 * Z;
+      if (blocked) to = swap.side > 0 ? Math.min(to, me.x - 60) : Math.max(to, me.x + 60);
+      startWalk(me, -swap.side, WALK_SPEED, to, 1000);
+      return true;
+    }
+    const watch = n.x > 0 && n.x < W ? n : swap.leaver || n;
+    setFace(me, Math.sign(watch.x - me.x) || me.face);
+    return true;
+  }
+  setFace(me, Math.sign(opp.x - me.x) || me.face);
+  if (swap.phase !== 'approach' || !canStep(me) || me.stepRest > 0 || opp.state !== 'guard') return true;
+  const d = Math.abs(opp.x - me.x);
+  if (loser && d > RESPECT_GAP + RESPECT_TOL) {
+    // Come closer: a push-step when it brings the distance nearer the gap,
+    // otherwise a short walk, when even its first stride does not overshoot.
+    const len = stepLength(me);
+    const slack = RESPECT_GAP - MIN_GAP - 4;
+    if (stepInFits(me, opp, d) && Math.abs(d - len - RESPECT_GAP) < d - RESPECT_GAP) startStep(me, 1);
+    else if (d - RESPECT_GAP - firstWalkSpan(me) >= -slack) {
+      const dir = Math.sign(opp.x - me.x);
+      startWalk(me, dir, WALK_SPEED, opp.x - dir * RESPECT_GAP, slack);
+    } else swap.settled = true; // nothing brings it closer: show respect from here
+  } else if (d < MIN_GAP) {
+    // Too close (the bodies overlap, 43 px was seen): the loser steps back,
+    // or the winner when the loser cannot.
+    const backTo = (f) => f.x - f.face * stepLength(f);
+    const roomBack = (f) => backTo(f) >= MARGIN && backTo(f) <= W - MARGIN;
+    if (loser ? roomBack(me) : !roomBack(opp) && roomBack(me)) startStep(me, -1);
+    else if (!loser && !roomBack(opp) && !roomBack(me)) swap.settled = true;
+  }
+  return true;
+}
+
+// The leaving body goes on as a separate walker, so the slot can take the
+// newcomer while the loser is still on screen. A leaver is drawn behind the
+// fighters, cannot be hit and hits nobody (it is not in fighters).
 function makeLeaver(src) {
   const l = makeFighter(src.slot, src.char, src.face);
   sizeSprite(l.sprite);
+  l.leaverId = ++leaverCount; // its own key in the foot trace (two can walk at once)
   Object.assign(l, {
-    leaving: true, x: src.x, y: src.y, state: 'exit', lastState: 'exit', stateAge: src.stateAge || 0,
-    phase: src.phase, clock: src.clock, pose: { ...src.pose }, vel: { ...src.vel }, sk: src.sk,
-    swapSpeed: src.swapSpeed, dir: swap.dir, edge: swap.edge, cool: 0,
+    leaving: true, x: src.x, y: src.y, state: 'guard', lastState: src.state, stateAge: 0,
+    clock: src.clock, pose: { ...src.pose }, vel: { ...src.vel }, sk: src.sk, cool: 0,
+    lastDraw: src.lastDraw, // where the loser's feet were drawn, so the turn does not pop
   });
   return l;
 }
@@ -3353,19 +3659,57 @@ function stepLeavers(dt) {
   for (let i = leavers.length - 1; i >= 0; i--) {
     const l = leavers[i];
     l.clock += dt;
-    l.y = ground();
-    l.x += l.dir * l.swapSpeed * dt;
-    if ((l.x - l.edge) * l.dir >= 0) {
+    walkTick(l, dt);
+    if ((l.x - l.edge) * l.face >= 0) {
       l.sprite.c.remove();
       leavers.splice(i, 1);
+      swapMark(`gone ${l.char} slot=${l.slot}`);
     }
   }
 }
 
-function startEnter(me) {
+// After respect 1: the loser turns and walks off, the newcomer walks in.
+// The newcomer comes from the edge nearest the winner, and the loser walks
+// toward the opposite edge, so the two never cross. When the nearest edge is
+// on the loser's side, the loser would have to walk past the winner: the
+// other edge is used instead when its entry still fits the time budget.
+function startSwapWalk() {
+  const me = swap.f;
+  const w = swap.winner;
+  // The newcomer chosen at the knockout (alternation rule), checked again:
+  // never the one leaving, never the winner's or the leaver's art.
+  const next = swap.next && bench.includes(swap.next) ? swap.next : pickNewcomer(w.char, me.char);
+  if (!next) {
+    swapMark(`skip no-candidate at walk ko=${me.char} by=${w.char}`);
+    for (const x of [me, w]) { x.state = 'guard'; x.timer = 0; }
+    swap = null;
+    forceKoIn = FORCE_KO;
+    return;
+  }
+  const want = swapWant(w);
+  const s = Math.sign(me.x - w.x) || 1; // the loser's side of the winner
+  const fits = (side) => w.x + side * want >= MARGIN && w.x + side * want <= W - MARGIN;
+  const entry = (side) => Math.abs(edgeX(side) - (w.x + side * want));
+  const budget = Math.max(2, SWAP_TOTAL - (fightClock - swap.t0) - RESPECT_HOLD - 0.5);
+  let side = w.x < W / 2 ? -1 : 1;
+  if (side === s && fits(-s) && entry(-s) <= WALK_MAX * budget) side = -s;
+  // No room for the newcomer on that side: the other side only when its
+  // entry fits the budget too; otherwise the winner steps back to make room
+  // (swapTurn) and the newcomer walks on as the spot moves.
+  if (!fits(side) && fits(-side) && entry(-side) <= WALK_MAX * budget) side = -side;
+  const speed = clamp(entry(side) / budget, WALK_SPEED, WALK_MAX);
+  const out = Math.abs(edgeX(-side) - me.x);
+  Object.assign(swap, { side, want });
+  swapPhase('walk', `side=${side} cross=${side === s ? 1 : 0} in=${Math.round(entry(side))} out=${Math.round(out)} speed=${Math.round(speed)} want=${Math.round(want)}`);
   const old = me.char;
-  leavers.push(makeLeaver(me));
-  const next = bench.shift();
+  const l = makeLeaver(me);
+  startWalk(l, -side, WALK_SPEED, null);
+  l.edge = edgeX(-side);
+  leavers.push(l);
+  swap.leaver = l;
+  swapMark(`exit ${old} slot=${me.slot} dir=${-side} walk=${Math.round(out)}`);
+  if (next === old || sameArt(next, w.char) || sameArt(next, old)) swapMark(`INVALID newcomer ${next} leaver=${old} winner=${w.char}`);
+  bench.splice(bench.indexOf(next), 1);
   bench.push(old); // the knocked-out character waits at the end of the line
   setChar(me, next);
   try {
@@ -3378,17 +3722,11 @@ function startEnter(me) {
   }
   // A fresh fighter just outside the edge, facing in: full stamina, no
   // leftovers from the one who left.
-  me.x = swap.edge;
-  me.face = -swap.dir;
+  me.x = edgeX(side);
+  me.face = -side;
   me.pose = { ...POSES.guard };
   me.vel = P({});
-  me.state = 'enter';
-  me.swapSpeed = swap.speed;
   me.phase = 0;
-  me.timer = 0;
-  me.vx = 0;
-  me.move = null;
-  me.defense = null;
   me.stamina = 0;
   me.staminaMax = 0; // stepStamina fills it on the next frame
   me.gassed = false;
@@ -3399,36 +3737,103 @@ function startEnter(me) {
   me.groundDone = false;
   me.wantT = 0;
   me.sprite.ox = NaN;
-  swap.phase = 'enter';
+  // It stops at the winner's distance, never closer than the bodies allow.
+  startWalk(me, -side, speed, newcomerSpot(), Math.max(0, want - MIN_GAP - 4));
   swapMark(`enter ${next} slot=${me.slot} after=${old} bench=${bench.join(',')}`);
 }
 
-// exit and enter, for the slot occupant (see update).
-function stepSwapRun(me, opp, dt) {
+// A slot occupant walking or showing respect (see update).
+function stepSwapBody(me, opp, dt) {
   me.y = ground();
   me.vx = 0;
-  if (!swap) { me.state = 'guard'; return; } // safety: never stuck running
-  const step = me.swapSpeed * dt;
-  if (me.state === 'exit') {
-    me.x += swap.dir * step;
-    const way = Math.abs(me.x - swap.startX) / Math.max(1, Math.abs(swap.edge - swap.startX));
-    if (way >= SWAP_HANDOFF) startEnter(me);
+  if (!swap) { me.state = 'guard'; me.timer = 0; return; } // safety: never stuck
+  if (me.state === 'respect') {
+    me.timer -= dt;
+    if (me.timer <= 0) { me.timer = 0; me.state = 'guard'; }
     return;
   }
+  // The frame the walk stopped on is drawn once as a walk frame, so the
+  // hand-over to the stance starts from where that frame put the feet
+  // (handing over from the frame before popped the front foot 30 px).
+  if (me.walkHold) {
+    me.walkHold = false;
+    me.state = 'guard';
+    me.stepRest = 0.3;
+    return;
+  }
+  // The newcomer heads for the winner's distance from where the winner stands now.
+  if (me === swap.f && swap.phase === 'walk') me.walkTo = newcomerSpot();
+  if (walkTick(me, dt)) me.walkHold = true;
+}
+
+// The swap's phases, once per frame after both fighters moved.
+function stepSwap(dt) {
+  if (!swap) return;
+  swap.phaseT += dt;
+  if (fightClock - swap.t0 > SWAP_ABORT) { abortSwap(); return; }
+  const f = swap.f;
   const w = swap.winner;
-  const tx = clamp(w.x + swap.dir * swap.want, MARGIN, W - MARGIN);
-  if (Math.abs(tx - me.x) > step) {
-    me.x += Math.sign(tx - me.x) * step;
-    return;
+  const calm = (x) => x.state === 'guard' && !x.airborne && x.timer <= 0;
+  const d = () => Math.round(Math.abs(w.x - f.x));
+  const respect = (name) => {
+    const a = startRespect(f, w);
+    const b = startRespect(w, f);
+    swapPhase(name, `d=${d()} clips=${a},${b} chars=${f.char},${w.char}`);
+  };
+  switch (swap.phase) {
+    case 'down':
+      if (calm(f)) swapPhase('approach', `d=${d()}`);
+      break;
+    case 'approach':
+      if (calm(f) && calm(w) && ((d() >= MIN_GAP && d() <= RESPECT_GAP + RESPECT_TOL) || swap.settled || swap.phaseT > APPROACH_MAX || !canStep(f))) respect('respect1');
+      break;
+    case 'respect1':
+      if (f.state !== 'respect' && w.state !== 'respect') startSwapWalk();
+      break;
+    case 'walk':
+      // Respect 2 once both stand still and the newcomer is fully on screen
+      // (inside the margins the fight keeps everyone in).
+      if (calm(f) && calm(w) && f.x >= MARGIN && f.x <= W - MARGIN) respect('respect2');
+      break;
+    case 'respect2':
+      if (f.state !== 'respect' && w.state !== 'respect') finishSwap();
+      break;
+    default:
+      break;
   }
-  // Arrived: guard up, a short cooldown, and the fight goes on.
-  me.x = tx;
-  me.state = 'guard';
-  setFace(me, Math.sign(w.x - me.x) || me.face);
-  me.cool = 0.5;
-  me.stepRest = 0.4;
+}
+
+// Respect 2 is over: guard, the newcomer at full stamina, and the fight goes on.
+function finishSwap() {
+  const f = swap.f;
+  const w = swap.winner;
+  for (const x of [f, w]) {
+    x.state = 'guard';
+    x.timer = 0;
+    calmDown(x);
+  }
+  if (f.staminaMax) f.stamina = f.staminaMax;
+  f.gassed = false;
+  f.cool = 0.5;
+  f.stepRest = 0.4;
+  f.wantT = 0;
   w.cool = Math.max(w.cool, 0.6);
-  swapMark(`done ${Math.round(performance.now() - swap.real0)} clock=${Math.round((fightClock - swap.t0) * 1000)} char=${me.char} d=${Math.abs(w.x - me.x).toFixed(0)}`);
+  w.stepRest = Math.max(w.stepRest || 0, 0.4);
+  const l = swap.leaver && leavers.includes(swap.leaver) ? Math.round(swap.leaver.x) : 'gone';
+  swapMark(`done ${swapMs()} clock=${Math.round((fightClock - swap.t0) * 1000)} char=${f.char} d=${Math.round(Math.abs(w.x - f.x))} leaver=${l}`);
+  swapMark(`fight ${red.char} vs ${blue.char}`);
+  checkPair('done');
+  swap = null;
+  forceKoIn = FORCE_KO;
+}
+
+// Safety: a swap that hangs (a dragged fighter, a blocked step) is ended.
+function abortSwap() {
+  swapMark(`abort t=${swapMs()} phase=${swap.phase}`);
+  for (const x of [swap.f, swap.winner]) {
+    if (SWAP_STATES.has(x.state)) { x.state = 'guard'; x.timer = 0; }
+    x.x = clamp(x.x, MARGIN, W - MARGIN);
+  }
   swap = null;
   forceKoIn = FORCE_KO;
 }
@@ -3436,7 +3841,8 @@ function stepSwapRun(me, opp, dt) {
 // Test: NETBATTLE_FORCE_KO knocks out the leading slot's fighter every
 // FORCE_KO seconds of fight (counted from the last swap), when it stands free.
 function stepForceKo(dt) {
-  if (!FORCE_KO || SHOWCASE || swap || !bench.length) return;
+  // Also with an empty bench, so the no-swap path of a knockout gets tested.
+  if (!FORCE_KO || SHOWCASE || swap) return;
   if ((forceKoIn -= dt) > 0) return;
   const victim = leader || red;
   const winner = victim === red ? blue : red;
@@ -3457,6 +3863,7 @@ function stepForceKo(dt) {
     console.error(err);
   }
   planSwap(victim, winner);
+  if (!swap) forceKoIn = FORCE_KO; // no swap (no valid newcomer): next forced knockout later
 }
 
 // ---------- Showcase (debug) ----------
@@ -3478,11 +3885,34 @@ function dbgFighter(f) {
   const hb = bounds(f.sk); const at = fighterAt(f.x, ground() - 60);
   return `${f.slot}[char=${f.char} hit=${at ? at.slot : 'none'} box=${Math.round(hb.x)}..${Math.round(hb.x + hb.w)} x=${Math.round(f.x)} cool=${f.cool.toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} want=${(+f.want).toFixed(0)} rest=${(f.stepRest || 0).toFixed(1)} minIdeal=${best.toFixed(0)}]`;
 }
+// Standoff watchdog (test mode): when nobody has started a strike for 5 s while
+// the fighters are in fighting range, log why each one is not acting.
+let lastStrikeClock = 0;
+let stallMark = 0;
+function stallInfo(f) {
+  const o = f === red ? blue : red;
+  const d = Math.abs(o.x - f.x);
+  let pick = '-';
+  try { const q = pickCombo(power(f), d, f, o); pick = q ? q.join('+') : 'null'; } catch (e) { pick = 'err'; }
+  return `${f.key}[${f.char} st=${f.state} t=${(+f.timer).toFixed(1)} cool=${f.cool.toFixed(1)} rest=${(f.stepRest || 0).toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} left=${f.comboLeft || 0} gassed=${f.gassed ? 1 : 0} vx=${f.vx.toFixed(0)} out=${outclassed(f, o) ? 1 : 0} lead=${leader === f ? 1 : 0} pick=${pick} oppst=${o.state} oppvx=${o.vx.toFixed(0)}]`;
+}
+function stallWatch() {
+  if (swap || fightClock - lastStrikeClock < 5 || fightClock < stallMark) return;
+  const d = Math.abs(red.x - blue.x);
+  if (d >= ENGAGE) return;
+  stallMark = fightClock + 3;
+  invoke('showcase_mark', { label: `STALL ${((fightClock - lastStrikeClock)).toFixed(1)}s d=${d.toFixed(0)} spd=${fmt(speed.down)}/${fmt(speed.up)} ${stallInfo(red)} ${stallInfo(blue)}` }).catch(() => {});
+}
+
 function stepFightTest(dt) {
+  stallWatch();
   const phase = Math.floor(fightClock / 15) % 3;
-  const [down, up] = [[2e6, 5e4], [5e4, 2e6], [4e5, 3e5]][phase];
-  speed.down = down;
-  speed.up = up;
+  if (REAL_TRAFFIC) stepRealTraffic(dt);
+  else {
+    const [down, up] = [[2e6, 5e4], [5e4, 2e6], [4e5, 3e5]][phase];
+    speed.down = down;
+    speed.up = up;
+  }
   updateLeader();
   fightTest.mark -= dt;
   if (fightTest.mark <= 0) {
@@ -3600,6 +4030,8 @@ function frameBody() {
     stepScene(dt);
     update(red, blue, dt);
     update(blue, red, dt);
+    stepSwap(dt);
+    checkPair('frame'); // alternation assertion, every frame
     stepLeavers(dt);
     separate();
   }

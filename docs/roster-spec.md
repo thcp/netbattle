@@ -48,6 +48,32 @@ Triggered by `Progress.onKnockout(victim, attacker)` (stamina rule, already in t
 
 The swap reuses the knockout the user already approved; it does not add a new trigger.
 
+## Respect and walking (replaces the sprint, owner 2026-10-10)
+
+The sequence of a swap becomes:
+
+1. The victim falls, lies and gets up (as before). The winner holds guard.
+2. **Respect 1:** winner and loser stand facing each other at a respectful distance
+   (about 65 px between hips) and show respect together: Muay Thai and kickboxing fighters (red,
+   Thales) touch gloves, the karate fighter (blue) bows. Any pairing that includes
+   blue: both bow. The gesture uses clips `touchGloves` (lead glove forward to meet
+   the other's glove, hold about 0.4 s, back to guard) and `bow` (feet together,
+   torso bends forward about 30 degrees, hold about 0.6 s, back up).
+3. **Walk:** the loser walks out (clip `walk`, plain walking pace, no sprint), away
+   from the newcomer's entry edge. The newcomer walks in at the same time (also `walk`)
+   from the edge nearest to the winner, so the entry is short; the loser may still be
+   on screen walking away while the fight resumes. The two never cross.
+4. **Respect 2:** when the newcomer reaches the winner's `want` distance, both turn to
+   each other and show respect (same rule), then guard and the fight starts.
+5. The loser joins the end of the bench when he has left the screen.
+
+Walk speed about 130 px/s (tune by eye; casual but not slow). A knockout during any of
+this is ignored. The newcomer cannot be attacked before respect 2 ends. Nobody slides:
+walks use the plain clip speed rules like runs do.
+
+Clips needed per character: `bow` (all), `touchGloves` (red, Thales), `walk` (all;
+red and blue already have `shuffleA` or `shuffleB` walk cycles that may be reused).
+
 ## Per-character state
 
 - `progress.json` version 2: `{ "version": 2, "chars": { "red": {...}, "blue": {...}, "thales": {...} }, "bench": ["thales"], "slots": {"down": "red", "up": "blue"} }`.

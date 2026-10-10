@@ -2,6 +2,7 @@
     "down": {
         "backflip": 10,
         "block": 9,
+        "bow": 9,
         "cartwheelKick": 13,
         "check": 9,
         "down": 7,
@@ -34,11 +35,13 @@
         "straight": 9,
         "straightPro": 9,
         "sway": 9,
-        "teep": 9
+        "teep": 9,
+        "touchGloves": 8
     },
     "up": {
         "backflip": 10,
         "block": 9,
+        "bow": 9,
         "check": 9,
         "down": 7,
         "downV2": 9,
@@ -79,6 +82,7 @@
     },
     "thales": {
         "block": 5,
+        "bow": 9,
         "check": 5,
         "down": 6,
         "duck": 6,
@@ -94,6 +98,8 @@
         "stepF": 9,
         "straightPro": 5,
         "sway": 5,
-        "uppercut": 6
+        "touchGloves": 8,
+        "uppercut": 6,
+        "walk": 9
     }
 }

@@ -5,15 +5,14 @@ like .claude/tmp/thales_frames from the reskin method. The clips are copied
 to src/sprites/<key>/<clip>/, the manifest entry for <key> is updated (clip
 name to frame count; other clips already listed are kept), skin tones are
 lightened with tools/recolor_skin.py when --lighter-skin is given, and the
-feet are thickened with tools/thicken_feet.py (red's pipeline), unless
---no-thicken is given.
+feet of the imported clips (and only those) are thickened with
+tools/thicken_feet.py (red's pipeline), unless --no-thicken is given.
 
 usage: python tools/import_frames.py <source dir> <sprite key> [--lighter-skin] [--no-thicken]
 """
 import json
 import os
 import shutil
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +20,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 from recolor_skin import recolor  # noqa: E402
+from thicken_feet import SKIP as NO_THICKEN, thicken  # noqa: E402
 from PIL import Image  # noqa: E402
 
 
@@ -43,14 +43,14 @@ def main(argv):
             im = Image.open(os.path.join(src, clip, f)).convert('RGBA')
             if '--lighter-skin' in flags:
                 im = recolor(im)
+            if '--no-thicken' not in flags and clip not in NO_THICKEN:
+                im = thicken(im)  # only the imported clips, so a re-import never thickens twice
             im.save(os.path.join(dest, f'{i}.png'))
         entry[clip] = len(files)
     manifest[key] = dict(sorted(entry.items()))
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=4)
     print(f'{len(clips)} clips imported into {key}: ' + ', '.join(f'{c} {entry[c]}' for c in clips))
-    if '--no-thicken' not in flags:
-        subprocess.run([sys.executable, os.path.join(HERE, 'thicken_feet.py'), key], check=True)
 
 
 if __name__ == '__main__':
