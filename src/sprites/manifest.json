@@ -82,6 +82,7 @@
         "check": 5,
         "down": 6,
         "duck": 6,
+        "frontKickHead": 7,
         "getUp": 6,
         "hit": 6,
         "hookPro2": 5,
@@ -92,6 +93,7 @@
         "stepClose": 3,
         "stepF": 9,
         "straightPro": 5,
-        "sway": 5
+        "sway": 5,
+        "uppercut": 6
     }
 }
