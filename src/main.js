@@ -476,6 +476,7 @@ const isKick = (name) => !!name && KICKS.has(MOVES[name].limb);
 // How many strikes follow the first: more with more traffic, more for the leader.
 function comboExtra(me, opp, planned) {
   if (outclassed(me, opp) && !personality(me).alwaysCombo) return 0;
+  if (personality(me).alwaysCombo) return planned; // Thales: exactly the 3 strikes of his sequence
   const p = 0.2 + 0.45 * power(me) + (me === leader ? 0.15 : 0) - (opp === leader ? 0.1 : 0) + personality(me).comboBonus;
   let n = planned;
   while (n < 4 && Math.random() < p) n++;
@@ -613,10 +614,10 @@ const artOf = (char) => (CHAR_INFO[char] && CHAR_INFO[char].art) || char;
 const ARROW = { down: '↓', up: '↑' };
 
 // Thales (docs/thales-spec.md), a kickboxer who always throws combos: every
-// entry has 3 or more strikes (owner: "3 attacks combos"), heaviest first. Only moves he has clips for.
+// entry has exactly 3 strikes (owner: "3 strikes per combo"), heaviest first. Only moves he has clips for.
 const THALES_COMBOS = [
   { seq: ['cross', 'hook', 'uppercut'], range: 'mid', w: [3, 3.5] },
-  { seq: ['cross', 'hook', 'uppercut', 'frontKickHead'], range: 'mid', w: [2, 3] },
+  { seq: ['hook', 'uppercut', 'frontKickHead'], range: 'mid', w: [2, 3] },
   { seq: ['cross', 'hook', 'frontKickHead'], range: 'far', w: [2, 2] },
   { seq: ['lowKickRetreat', 'cross', 'hook'], range: 'mid', w: [1.5, 1.5] },
   { seq: ['lowKick', 'cross', 'hook'], range: 'mid', w: [1, 1] },

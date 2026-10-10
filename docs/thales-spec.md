@@ -1,8 +1,8 @@
 # Thales: a third fighter
 
 Requested by the owner on 2026-10-10. Same body as red, different look and a more
-aggressive style. Thales is a **kickboxer** (owner, 2026-10-10) who **always throws combos of 3 or
-more strikes** (never a single strike).
+aggressive style. Thales is a **kickboxer** (owner, 2026-10-10) who **always throws combos of exactly 3
+strikes** (never a single strike, never more).
 
 ## Look
 
@@ -19,9 +19,9 @@ more strikes** (never a single strike).
 More aggressive than red:
 
 - Shorter pauses between attacks (about 0.6 times red's cooldown) and longer combos.
-- Combos, every attack is one (3 or more strikes), in this order of weight:
+- Combos, every attack is one (exactly 3 strikes), in this order of weight:
   1. straight, hook, uppercut (3 strikes)
-  2. straight, hook, uppercut, front kick to the face (4 strikes)
+  2. hook, uppercut, front kick to the face (3 strikes)
   3. straight, hook, front kick to the face (from range, 3 strikes)
   4. low kick that lands behind him (a back step), then a straight with the opposite hand,
      then a hook (3 strikes)
