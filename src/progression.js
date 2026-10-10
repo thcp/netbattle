@@ -11,7 +11,16 @@ const Progress = (() => {
   const SAVE_EVERY = 30; // seconds
   const STATS = ['speed', 'stamina', 'strength'];
   const STAT_NAMES = { speed: 'Speed', stamina: 'Stamina', strength: 'Strength' };
-  const KEYS = ['down', 'up'];
+  // Slots carry the traffic role; characters carry the progress (docs/roster-spec.md).
+  const SLOTS = ['down', 'up'];
+  const ROLE = { down: 'download', up: 'upload' };
+  // Characters whose progress is saved. 'red2' is a debug copy of red: it has
+  // state in memory, but is never written to the file.
+  const SAVED_CHARS = ['red', 'blue', 'thales'];
+  const CHARS = [...SAVED_CHARS, 'red2'];
+  const CHAR_NAMES = { red: 'Red', blue: 'Blue', thales: 'Thales', red2: 'Red 2' };
+  // Before main.js sets f.char: the old fighter key stands for its character.
+  const LEGACY_CHAR = { down: 'red', up: 'blue' };
   const FLOAT_SECONDS = 2;
 
   // Cost to finish level n, in GiB.
@@ -21,23 +30,38 @@ const Progress = (() => {
   for (let n = 1; n < MAX_LEVEL; n++) cum.push(cum[n - 1] + cost(n) * GIB);
 
   const fresh = () => ({ bytes: 0, build: { speed: 0, stamina: 0, strength: 0 }, lost: 0, protectLeft: 0 });
-  const state = { down: fresh(), up: fresh() };
-  // Per fighter, not saved: bytes loaded from the file, bytes counted this
+  const state = {};
+  // Per character, not saved: bytes loaded from the file, bytes counted this
   // session, the last knockout, and the level a test build forces.
-  const extra = {
-    down: { base: 0, session: 0, lastKo: null, testLevel: 0 },
-    up: { base: 0, session: 0, lastKo: null, testLevel: 0 },
-  };
+  const extra = {};
+  for (const c of CHARS) {
+    state[c] = fresh();
+    extra[c] = { base: 0, session: 0, lastKo: null, testLevel: 0 };
+  }
+  // Who stands in each slot, who waits (first in, first out), and the last
+  // cumulative traffic total seen per slot (so a swap does not double count).
+  const slots = { down: 'red', up: 'blue' };
+  let bench = ['thales'];
+  const baseline = { down: 0, up: 0 };
 
-  const totalBytes = (key) => extra[key].base + extra[key].session;
+  // The character of a fighter object (or of a bare char / slot name).
+  function charOf(f) {
+    if (typeof f === 'string') return CHARS.includes(f) ? f : LEGACY_CHAR[f] || 'red';
+    if (!f) return 'red';
+    if (CHARS.includes(f.char)) return f.char;
+    return LEGACY_CHAR[f.slot || f.key] || 'red';
+  }
+  const slotOfFighter = (f) => (f && (f.slot || f.key)) || 'down';
+
+  const totalBytes = (c) => extra[c].base + extra[c].session;
   const levelFromBytes = (bytes) => {
     let level = 1;
     while (level < MAX_LEVEL && bytes >= cum[level]) level++;
     return level;
   };
-  const spent = (key) => STATS.reduce((a, s) => a + state[key].build[s], 0);
-  const levelOf = (key) => extra[key].testLevel || levelFromBytes(totalBytes(key));
-  const unspentOf = (key) => Math.max(0, levelOf(key) - 1 - state[key].lost - spent(key));
+  const spent = (c) => STATS.reduce((a, s) => a + state[c].build[s], 0);
+  const levelOf = (c) => extra[c].testLevel || levelFromBytes(totalBytes(c));
+  const unspentOf = (c) => Math.max(0, levelOf(c) - 1 - state[c].lost - spent(c));
 
   const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
 
@@ -45,12 +69,12 @@ const Progress = (() => {
   let sinceSave = 0;
 
   function snapshot() {
-    const out = { version: 1 };
-    for (const key of KEYS) {
-      const s = state[key];
-      out[key] = { bytes: totalBytes(key), build: { ...s.build }, lost: s.lost, protectLeft: s.protectLeft };
+    const chars = {};
+    for (const c of SAVED_CHARS) {
+      const st = state[c];
+      chars[c] = { bytes: totalBytes(c), build: { ...st.build }, lost: st.lost, protectLeft: st.protectLeft };
     }
-    return JSON.stringify(out);
+    return JSON.stringify({ version: 2, chars, bench: bench.filter((c) => SAVED_CHARS.includes(c)), slots: { ...slots } });
   }
 
   function save() {
@@ -63,6 +87,28 @@ const Progress = (() => {
     }
   }
 
+  const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const num = (v, lo, hi) => Math.max(lo, Math.min(hi, Number.isFinite(+v) ? +v : 0));
+
+  // One character's saved entry: {bytes, build, lost, protectLeft}. Odd values
+  // are clamped, never thrown on.
+  function loadEntry(c, d) {
+    if (!isObj(d)) return;
+    extra[c].base = num(d.bytes, 0, Number.MAX_SAFE_INTEGER);
+    for (const s of STATS) state[c].build[s] = Math.floor(num(isObj(d.build) ? d.build[s] : 0, 0, STAT_CAP));
+    state[c].lost = Math.floor(num(d.lost, 0, 1000));
+    state[c].protectLeft = num(d.protectLeft, 0, PROTECT_SECONDS);
+    // Guard against a hand-edited file spending more than was earned.
+    while (unspentOf(c) === 0 && levelOf(c) - 1 < state[c].lost + spent(c)) {
+      const s = STATS.find((n) => state[c].build[n] > 0);
+      if (!s) break;
+      state[c].build[s]--;
+    }
+  }
+
+  // Version 2: {version, chars:{red,blue,thales}, bench:[...], slots:{down,up}}.
+  // Version 1: {version, down:{...}, up:{...}}; down is red and up is blue,
+  // nothing is lost. Anything else leaves the defaults in place.
   function load(text) {
     let data;
     try {
@@ -70,32 +116,34 @@ const Progress = (() => {
     } catch (err) {
       return;
     }
-    for (const key of KEYS) {
-      const d = data && data[key];
-      if (!d) continue;
-      const num = (v, lo, hi) => Math.max(lo, Math.min(hi, Number.isFinite(+v) ? +v : 0));
-      extra[key].base = num(d.bytes, 0, Number.MAX_SAFE_INTEGER);
-      for (const s of STATS) state[key].build[s] = Math.floor(num(d.build && d.build[s], 0, STAT_CAP));
-      state[key].lost = Math.floor(num(d.lost, 0, 1000));
-      state[key].protectLeft = num(d.protectLeft, 0, PROTECT_SECONDS);
-      // Guard against a hand-edited file spending more than was earned.
-      while (unspentOf(key) === 0 && levelOf(key) - 1 < state[key].lost + spent(key)) {
-        const s = STATS.find((n) => state[key].build[n] > 0);
-        if (!s) break;
-        state[key].build[s]--;
+    if (!isObj(data)) return;
+    if (isObj(data.chars)) {
+      for (const c of SAVED_CHARS) loadEntry(c, data.chars[c]);
+      const sl = data.slots;
+      if (isObj(sl) && SAVED_CHARS.includes(sl.down) && SAVED_CHARS.includes(sl.up) && sl.down !== sl.up) {
+        slots.down = sl.down;
+        slots.up = sl.up;
       }
+      // A bench that is not a list falls back to the default.
+      const list = Array.isArray(data.bench) ? data.bench : ['thales'];
+      bench = [];
+      for (const c of list) if (SAVED_CHARS.includes(c) && c !== slots.down && c !== slots.up && !bench.includes(c)) bench.push(c);
+    } else {
+      loadEntry('red', data.down);
+      loadEntry('blue', data.up);
+      bench = ['thales'];
     }
   }
 
-  // "red=10,0,0;blue=0,10,5" -> builds (speed, stamina, strength).
+  // "red=10,0,0;blue=0,10,5;thales=..." -> builds (speed, stamina, strength).
   function parseTestBuild(text) {
     for (const part of text.split(';')) {
       const [who, nums] = part.split('=');
-      const key = { red: 'down', blue: 'up' }[(who || '').trim()];
-      if (!key || !nums) continue;
+      const c = (who || '').trim();
+      if (!CHARS.includes(c) || !nums) continue;
       const [speed, stamina, strength] = nums.split(',').map((n) => Math.max(0, Math.min(STAT_CAP, parseInt(n, 10) || 0)));
-      state[key].build = { speed, stamina, strength };
-      extra[key].testLevel = 1 + speed + stamina + strength;
+      state[c].build = { speed, stamina, strength };
+      extra[c].testLevel = 1 + speed + stamina + strength;
     }
   }
 
@@ -144,20 +192,21 @@ const Progress = (() => {
 
   // ---------- Rules ----------
   function spendPoint(f, stat) {
-    const key = f.key;
+    const c = charOf(f);
     if (!STATS.includes(stat)) return false;
-    if (unspentOf(key) < 1 || state[key].build[stat] >= STAT_CAP) return false;
-    state[key].build[stat]++;
+    if (unspentOf(c) < 1 || state[c].build[stat] >= STAT_CAP) return false;
+    state[c].build[stat]++;
     save();
     return true;
   }
 
+  // The victim's character loses the point, whatever slot it stands in.
   function onKnockout(victim, attacker) {
-    const key = victim.key;
-    const s = state[key];
-    const by = attacker && attacker.key === 'down' ? 'Red' : 'Blue';
-    if (s.protectLeft > 0 || spent(key) === 0) {
-      extra[key].lastKo = { stat: null, by };
+    const c = charOf(victim);
+    const s = state[c];
+    const by = CHAR_NAMES[charOf(attacker)];
+    if (s.protectLeft > 0 || spent(c) === 0) {
+      extra[c].lastKo = { stat: null, by };
       return;
     }
     const pool = STATS.filter((n) => s.build[n] > 0);
@@ -165,17 +214,29 @@ const Progress = (() => {
     s.build[stat]--;
     s.lost++;
     s.protectLeft = PROTECT_SECONDS;
-    extra[key].lastKo = { stat, by };
+    extra[c].lastKo = { stat, by };
     floatText(victim, `-1 ${STAT_NAMES[stat]}`, 'loss');
     save();
   }
 
-  function addBytes(key, total) {
-    const before = levelOf(key);
-    extra[key].session = Math.max(0, total);
-    const after = levelOf(key);
-    if (after > before) return after;
-    return 0;
+  // Credits the growth of one slot's cumulative total to the character that
+  // stands in that slot now. Returns the new level when it rose, else 0.
+  function creditSlot(slot, total) {
+    const c = slots[slot];
+    total = Number.isFinite(total) ? Math.max(0, total) : 0;
+    let delta = total - baseline[slot];
+    baseline[slot] = total;
+    if (delta <= 0) return 0; // counter went back (reset): re-base, credit nothing
+    const before = levelOf(c);
+    extra[c].session += delta;
+    const after = levelOf(c);
+    return after > before ? after : 0;
+  }
+
+  // The fighter object standing in a slot (for floating text).
+  function occupant(slot) {
+    if (typeof fighters === 'undefined') return null;
+    return fighters.find((f) => f.slot === slot) || fighters.find((f) => !f.slot && f.key === slot) || null;
   }
 
   // ---------- Panel ----------
@@ -187,17 +248,18 @@ const Progress = (() => {
   let lastHtml = '';
 
   // info: { name, style, role, traffic, pct, status, record }, from main.js.
+  // role is the slot's traffic role ('download' or 'upload').
   function renderPanel(el, f, info) {
-    const key = f.key;
-    const s = state[key];
-    const level = levelOf(key);
-    const unspent = unspentOf(key);
+    const c = charOf(f);
+    const s = state[c];
+    const level = levelOf(c);
+    const unspent = unspentOf(c);
     const r = info.record;
     let xp;
     if (level >= MAX_LEVEL) {
       xp = `<div class="label">Level ${level} <span class="soon">MAX</span></div><div class="bar"><i style="width:100%"></i></div>`;
     } else {
-      const used = Math.max(0, totalBytes(key) - cum[level - 1]);
+      const used = Math.max(0, totalBytes(c) - cum[level - 1]);
       const need = cost(level) * GIB;
       xp = `<div class="label">Level ${level} <span class="soon">${gib(used)} / ${gib(need)} GiB</span></div><div class="bar"><i style="width:${Math.min(100, (100 * used) / need).toFixed(1)}%"></i></div>`;
     }
@@ -211,7 +273,7 @@ const Progress = (() => {
       const can = unspent > 0 && v < STAT_CAP;
       return `<div class="stat"><span>${STAT_NAMES[n]}</span><div class="pips">${'<i class="on"></i>'.repeat(v)}${'<i></i>'.repeat(STAT_CAP - v)}</div><button data-stat="${n}" ${can ? '' : 'disabled'} aria-label="Add a point to ${STAT_NAMES[n]}">+</button></div>`;
     }).join('');
-    const ko = extra[key].lastKo;
+    const ko = extra[c].lastKo;
     const koLine = ko
       ? ko.stat
         ? `Last knockout: lost 1 ${STAT_NAMES[ko.stat]} (by ${ko.by})`
@@ -220,9 +282,10 @@ const Progress = (() => {
         ? `Points lost to knockouts: ${s.lost}`
         : 'No knockouts yet';
     const html = `
+    <div class="role">${info.role}</div>
     <div class="head">
-      <span class="dot"></span><strong>${info.name}</strong>
-      <span class="sub">${info.style}, ${info.role}</span>
+      <span class="dot"></span><strong>${info.name}</strong><span class="lv">Lv ${level}</span>
+      <span class="sub">${info.style}</span>
       <button class="x" data-close aria-label="Close">&times;</button>
     </div>
     <div class="row"><span>Traffic</span><b>${info.traffic}</b></div>
@@ -241,9 +304,9 @@ const Progress = (() => {
     ${stats}
     ${s.protectLeft > 0 ? `<div class="note prot">Protected ${mmss(s.protectLeft)}</div>` : ''}
     <div class="note">${koLine}</div>`;
-    if (html === lastHtml && el.dataset.f === key) return;
+    if (html === lastHtml && el.dataset.f === c) return;
     lastHtml = html;
-    el.dataset.f = key;
+    el.dataset.f = c;
     el.style.setProperty('--accent', f.color);
     el.innerHTML = html;
   }
@@ -294,24 +357,68 @@ const Progress = (() => {
         // No file yet: everyone starts at level 1.
       }
     },
-    build: (f) => state[f.key].build,
-    level: (f) => levelOf(f.key),
-    unspent: (f) => unspentOf(f.key),
+    build: (f) => state[charOf(f)].build,
+    level: (f) => levelOf(charOf(f)),
+    unspent: (f) => unspentOf(charOf(f)),
+    char: charOf,
+    name: (f) => CHAR_NAMES[charOf(f)],
+    roleOf: (f) => ROLE[slotOfFighter(f)] || 'download',
     spendPoint,
     onKnockout,
-    // Called from the 'net' listener with the payload's cumulative totals.
+    // Who stands in each slot now: {down, up}. After init() this is the saved
+    // order (red and blue by default). A copy, so callers cannot edit it.
+    slots: () => ({ ...slots }),
+    // main.js calls this on every swap, and once at the start for each slot.
+    setSlot(slot, char) {
+      if (!SLOTS.includes(slot) || !CHARS.includes(char)) return;
+      slots[slot] = char;
+      bench = bench.filter((c) => c !== char);
+      save();
+    },
+    // The waiting characters, first in line first. A copy.
+    bench: () => bench.slice(),
+    setBench(list) {
+      bench = [];
+      for (const c of Array.isArray(list) ? list : []) if (CHARS.includes(c) && !bench.includes(c)) bench.push(c);
+      save();
+    },
+    // At start: fits the saved slots and bench to the roster in use. Characters
+    // missing from the roster drop out; roster members not placed join the end
+    // of the bench. Returns {slots, bench} and stores them.
+    reconcile(roster) {
+      const list = (Array.isArray(roster) ? roster : []).filter((c, i, a) => CHARS.includes(c) && a.indexOf(c) === i);
+      let d = list.includes(slots.down) ? slots.down : null;
+      let u = list.includes(slots.up) && slots.up !== d ? slots.up : null;
+      for (const c of list) {
+        if (!d && c !== u) d = c;
+        else if (!u && c !== d) u = c;
+      }
+      slots.down = d || slots.down;
+      slots.up = u || slots.up;
+      const placed = [slots.down, slots.up];
+      bench = bench.filter((c, i) => list.includes(c) && !placed.includes(c) && bench.indexOf(c) === i);
+      for (const c of list) if (!placed.includes(c) && !bench.includes(c)) bench.push(c);
+      return { slots: { ...slots }, bench: bench.slice() };
+    },
+    // Called from the 'net' listener with the payload's cumulative totals per slot.
     onNet(p) {
       if (testMode || !p) return;
-      const d = addBytes('down', +p.downTotal || 0);
-      const u = addBytes('up', +p.upTotal || 0);
-      if (d && typeof red !== 'undefined') floatText(red, `LEVEL ${d}`, 'level');
-      if (u && typeof blue !== 'undefined') floatText(blue, `LEVEL ${u}`, 'level');
-      if (d || u) save();
+      const up = [];
+      for (const slot of SLOTS) {
+        const lv = creditSlot(slot, +p[slot + 'Total']);
+        if (lv) up.push([slot, lv]);
+      }
+      for (const [slot, lv] of up) {
+        const f = occupant(slot);
+        if (f) floatText(f, `LEVEL ${lv}`, 'level');
+      }
+      if (up.length) save();
     },
-    // Real seconds since the last call.
+    // Real seconds since the last call. Every character's protection runs,
+    // on screen or on the bench.
     tick(dt) {
-      for (const key of KEYS) {
-        if (state[key].protectLeft > 0) state[key].protectLeft = Math.max(0, state[key].protectLeft - dt);
+      for (const c of CHARS) {
+        if (state[c].protectLeft > 0) state[c].protectLeft = Math.max(0, state[c].protectLeft - dt);
       }
       sinceSave += dt;
       if (sinceSave >= SAVE_EVERY) save();
@@ -319,6 +426,6 @@ const Progress = (() => {
     },
     panel: { render: renderPanel, click: panelClick },
     // For tools/progression_check.js.
-    _internals: { cost, cum, levelFromBytes, state, extra, unspentOf, GIB, MAX_LEVEL, PROTECT_SECONDS },
+    _internals: { cost, cum, levelFromBytes, state, extra, slots, baseline, snapshot, unspentOf, totalBytes, GIB, MAX_LEVEL, PROTECT_SECONDS },
   };
 })();

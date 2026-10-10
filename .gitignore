@@ -4,3 +4,6 @@ src-tauri/gen/
 
 # Claude Code local settings and session files
 .claude/
+
+__pycache__/
+*.pyc

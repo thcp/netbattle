@@ -57,7 +57,7 @@ async function setView(full) {
   viewBusy = true;
   // Hidden until the next frame draws them at the new offset, so they do
   // not jump while the window resizes.
-  for (const f of fighters) f.sprite.c.style.visibility = 'hidden';
+  for (const f of bodies()) f.sprite.c.style.visibility = 'hidden';
   try {
     view = await invoke('set_view', { full });
     viewFull = full;
@@ -66,7 +66,7 @@ async function setView(full) {
   } catch (err) {
     console.error(err);
   }
-  for (const f of fighters) {
+  for (const f of bodies()) {
     f.sprite.ox = NaN;
     f.sprite.c.style.visibility = '';
   }
@@ -83,17 +83,18 @@ function updateView(dt) {
   if (collapseIn <= 0) setView(false);
 }
 
+function sizeSprite(s) {
+  s.c.width = Math.round(SPRITE_W * dpr);
+  s.c.height = Math.round(SPRITE_H * dpr);
+  s.c.style.width = SPRITE_W + 'px';
+  s.c.style.height = SPRITE_H + 'px';
+  s.aw = s.art.width = SPRITE_W / PIX;
+  s.ah = s.art.height = SPRITE_H / PIX;
+}
+
 function resize() {
   dpr = window.devicePixelRatio || 1;
-  for (const f of fighters) {
-    const s = f.sprite;
-    s.c.width = Math.round(SPRITE_W * dpr);
-    s.c.height = Math.round(SPRITE_H * dpr);
-    s.c.style.width = SPRITE_W + 'px';
-    s.c.style.height = SPRITE_H + 'px';
-    s.aw = s.art.width = SPRITE_W / PIX;
-    s.ah = s.art.height = SPRITE_H / PIX;
-  }
+  for (const f of bodies()) sizeSprite(f.sprite);
 }
 const ground = () => H - 1;
 
@@ -288,6 +289,13 @@ const MOVES = {
     keys: [[0, 'guard'], [0.45, 'lowKick'], [0.6, 'lowKick'], [1, 'guard']] },
   spinFist: { aim: 'head', dur: 0.7, hitAt: 0.6, reach: 56, knock: 40, limb: 'bh', defend: ['duck', 'block', 'bend'],
     keys: [[0, 'guard'], [0.3, 'spinTurn'], [0.6, 'spinFist'], [0.75, 'spinFist'], [1, 'guardS']] },
+  // Thales's own strikes (docs/thales-spec.md); only his combo table uses them.
+  hook: { aim: 'head', dur: 0.45, hitAt: 0.5, reach: 46, knock: 14, limb: 'fh', defend: ['block', 'sway'],
+    keys: [[0, 'guard'], [0.45, 'elbow'], [0.65, 'elbow'], [1, 'guard']] },
+  frontKickHead: { aim: 'head', dur: 0.75, hitAt: 0.5, reach: 64, knock: 40, limb: 'ffoot', defend: ['block', 'sway', 'duck'],
+    keys: [[0, 'guard'], [0.28, 'chamber'], [0.5, 'highKick'], [0.65, 'highKick'], [0.82, 'chamber'], [1, 'guard']] },
+  lowKickRetreat: { aim: 'thigh', dur: 0.75, hitAt: 0.45, reach: 56, knock: 8, limb: 'ffoot', defend: ['blockLow'],
+    keys: [[0, 'guard'], [0.45, 'lowKick'], [0.6, 'lowKick'], [1, 'guard']] },
   // Saenchai's cartwheel kick: red's signature finisher, always in slow motion.
   cartwheel: { aim: 'head', dur: 1.5, hitAt: 0.62, reach: 70, knock: 40, low: true, limb: 'ffoot', defend: ['duck', 'block', 'bend'],
     keys: [[0, 'guard'], [0.25, 'crouch'], [0.55, 'highKick'], [0.75, 'highKick'], [1, 'guard']] },
@@ -402,7 +410,7 @@ function predictPast(me, opp, clip, m) {
 // Hip distance at which this strike lands LAND_AT past the guard: measured
 // live when possible, else from the reference stance.
 function strikeIdeal(me, opp, name) {
-  const clip = clipFrames(me, MOVE_CLIPS[name]);
+  const clip = clipFrames(me, moveClip(me, name));
   const past = predictPast(me, opp, clip, MOVES[name]);
   const live = past != null ? Math.abs(opp.x - me.x) - (past - LAND_AT) : null;
   // Bodies drawn overlapping give no usable edge (the estimate goes below
@@ -424,20 +432,21 @@ function repeatFactor(me, name) {
 // Null when, with sprites, no strike reaches from distance d.
 function pickCombo(power, d, me, opp) {
   const range = rangeOf(d);
-  const weights = COMBOS.map((c) => {
+  const combos = combosOf(me); // the character's own table
+  const weights = combos.map((c) => {
     if (me && opp && !inRange(me, opp, c.seq[0], d)) return 0;
     const base = (c.w[0] + (c.w[1] - c.w[0]) * power) * repeatFactor(me, c.seq[0]);
     // With sprites, prefer combos whose first strike fits the current
     // distance, as real fighters do: jab from range, hooks and knees up close.
-    const ideal = me && opp ? idealDistance(me, opp, clipFrames(me, MOVE_CLIPS[c.seq[0]])) : null;
+    const ideal = me && opp ? idealDistance(me, opp, clipFrames(me, moveClip(me, c.seq[0]))) : null;
     if (ideal != null) return base * Math.exp(-(((ideal - d) / (30 * Z)) ** 2)) + 0.02 * base;
     return base * (c.range === range ? 1 : 0.15);
   });
   const total = weights.reduce((a, b) => a + b, 0);
   if (total <= 0) return null;
   let r = Math.random() * total;
-  for (let i = 0; i < COMBOS.length; i++) if (weights[i] > 0 && (r -= weights[i]) <= 0) return COMBOS[i].seq;
-  return COMBOS[weights.findIndex((w) => w > 0)].seq;
+  for (let i = 0; i < combos.length; i++) if (weights[i] > 0 && (r -= weights[i]) <= 0) return combos[i].seq;
+  return combos[weights.findIndex((w) => w > 0)].seq;
 }
 
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
@@ -452,7 +461,7 @@ const COMBO_SLACK = RANGE_NEAR + INCH_MAX * 0.75;
 // has little time to do it.
 function comboSlack(me, name) {
   const m = MOVES[name];
-  const clip = clipFrames(me, MOVE_CLIPS[name]);
+  const clip = clipFrames(me, moveClip(me, name));
   const hitAt = clip && clip.impact > 0 ? (clip.impact + 0.5) / clip.frames.length : m.hitAt;
   // Speed points (and tiredness) scale the strike time; the inching speed
   // scales with it (see stepAttack), so the reach of the inching stays put.
@@ -460,14 +469,14 @@ function comboSlack(me, name) {
   const inch = Math.min(INCH_MAX, INCH_SPEED * t * hitAt * (m.dur / t));
   return Math.min(COMBO_SLACK, RANGE_NEAR + 0.8 * inch);
 }
-const STRIKES = [...new Set(COMBOS.flatMap((c) => c.seq))];
+// The strikes a fighter chains in combos: strikesOf(me) (its character's table).
 const KICKS = new Set(['ffoot', 'bfoot', 'fk', 'bk']);
 const isKick = (name) => !!name && KICKS.has(MOVES[name].limb);
 
 // How many strikes follow the first: more with more traffic, more for the leader.
 function comboExtra(me, opp, planned) {
   if (outclassed(me, opp)) return 0;
-  const p = 0.2 + 0.45 * power(me) + (me === leader ? 0.15 : 0) - (opp === leader ? 0.1 : 0);
+  const p = 0.2 + 0.45 * power(me) + (me === leader ? 0.15 : 0) - (opp === leader ? 0.1 : 0) + personality(me).comboBonus;
   let n = planned;
   while (n < 4 && Math.random() < p) n++;
   return n;
@@ -477,7 +486,7 @@ function followUp(me, opp, planned) {
   const d = Math.abs(opp.x - me.x);
   const last = (me.recent || [])[0];
   const opts = [];
-  for (const name of STRIKES) {
+  for (const name of strikesOf(me)) {
     const ideal = strikeIdeal(me, opp, name);
     if (ideal == null || Math.abs(d - ideal) > comboSlack(me, name)) continue;
     let w = (name === planned ? 4 : 1) * repeatFactor(me, name);
@@ -495,7 +504,7 @@ function followUp(me, opp, planned) {
 // strike gets its turn, not only the ones that reach from where it stands.
 function plannedStrike(me, opp) {
   const p = power(me);
-  const opts = COMBOS.map((c) => [c.seq[0], (c.w[0] + (c.w[1] - c.w[0]) * p) * repeatFactor(me, c.seq[0])]);
+  const opts = combosOf(me).map((c) => [c.seq[0], (c.w[0] + (c.w[1] - c.w[0]) * p) * repeatFactor(me, c.seq[0])]);
   let r = Math.random() * opts.reduce((a, o) => a + o[1], 0);
   for (const [name, w] of opts) if ((r -= w) <= 0) return strikeIdeal(me, opp, name) != null ? name : null;
   return null;
@@ -512,7 +521,8 @@ function restAfterCombo(me, opp) {
   const r = Math.random();
   if (r < 0.2) cool = Math.max(0.4, cool * 0.5);
   else if (r < 0.3) cool *= 1.8;
-  me.cool = cool / tempo(me); // Speed points shorten the pause
+  // Speed points shorten the pause; so does an aggressive character.
+  me.cool = (cool * personality(me).cool) / tempo(me);
 }
 
 // Between two strikes of a combo: throw the next one once the opponent is set,
@@ -555,10 +565,11 @@ const speed = { down: 0, up: 0 };
 let leader = null;
 
 const powerOf = (bps) => clamp((Math.log10(bps + 1) - 3) / 4, 0, 1);
-const power = (me) => powerOf(speed[me.key]);
+// Traffic belongs to the slot ('down' or 'up'), whoever stands in it.
+const power = (me) => powerOf(speed[me.slot]);
 function share(me) {
   const total = speed.down + speed.up;
-  return total > 0 ? speed[me.key] / total : 0.5;
+  return total > 0 ? speed[me.slot] / total : 0.5;
 }
 const idle = () => speed.down + speed.up < IDLE_BPS;
 const strength = (me) => 0.4 + 1.2 * share(me); // 0.4 (no traffic) .. 1.6 (all of it)
@@ -566,7 +577,7 @@ const strength = (me) => 0.4 + 1.2 * share(me); // 0.4 (no traffic) .. 1.6 (all 
 // KB/s). An outclassed fighter attacks rarely and slowly, and almost every
 // attempt gets dodged, often in slow motion, or countered.
 const OUTCLASS = 0.9; // log10 of the traffic ratio
-const outclassed = (me, opp) => Math.log10((speed[opp.key] + 1024) / (speed[me.key] + 1024)) >= OUTCLASS;
+const outclassed = (me, opp) => Math.log10((speed[opp.slot] + 1024) / (speed[me.slot] + 1024)) >= OUTCLASS;
 const EVADES = new Set(['sway', 'duck', 'hop', 'bend']);
 
 function updateLeader() {
@@ -586,11 +597,76 @@ function fmt(bps) {
   return (bps / 1024 / 1024).toFixed(1) + ' MB/s';
 }
 
+// ---------- Characters ----------
+// docs/roster-spec.md: a fighter object is a slot occupant. The slot ('down'
+// or 'up') carries the traffic role; the character ('red', 'blue', 'thales')
+// carries the look, the clips and the progress. folder = sprite folder (red
+// and blue keep their old folder names). art = the character whose clip
+// tables a debug copy borrows: 'red2' is red with its own name and progress.
+const CHAR_INFO = {
+  red: { folder: 'down', name: 'Red', style: 'Muay Thai', color: '#e53935', shade: '#a32420', trail: '#ff8a80' },
+  blue: { folder: 'up', name: 'Blue', style: 'Karate', color: '#1e88e5', shade: '#11589c', trail: '#90caf9' },
+  thales: { folder: 'thales', name: 'Thales', style: 'Muay Thai', color: '#555b66', shade: '#33373e', trail: '#c7ccd6', outline: 'rgba(255, 255, 255, 0.85)' },
+  red2: { folder: 'down', name: 'Red 2', style: 'Muay Thai', color: '#e53935', shade: '#a32420', trail: '#ff8a80', art: 'red' },
+};
+const artOf = (char) => (CHAR_INFO[char] && CHAR_INFO[char].art) || char;
+const ARROW = { down: '↓', up: '↑' };
+
+// Thales (docs/thales-spec.md): his favourite sequences, heaviest first, plus
+// single openers so every distance has a strike. Only moves he has clips for.
+const THALES_COMBOS = [
+  { seq: ['cross', 'hook', 'uppercut'], range: 'mid', w: [3, 3.5] },
+  { seq: ['cross', 'hook'], range: 'mid', w: [2, 2.5] },
+  { seq: ['cross', 'hook', 'uppercut', 'frontKickHead'], range: 'mid', w: [2, 3] },
+  { seq: ['frontKickHead'], range: 'far', w: [2, 2] },
+  { seq: ['lowKickRetreat', 'cross'], range: 'mid', w: [1.5, 1.5] },
+  { seq: ['lowKick'], range: 'mid', w: [1, 1] },
+  { seq: ['cross'], range: 'mid', w: [0.6, 0.4] },
+  { seq: ['hook', 'uppercut'], range: 'close', w: [0.6, 0.8] },
+  { seq: ['uppercut'], range: 'close', w: [0.4, 0.4] },
+];
+// Style belongs to the character (roster spec, decision 4). cool scales the
+// pause after a combo, comboBonus is added to the chance of each extra strike,
+// combos replaces the shared combo table (null keeps COMBOS).
+const PERSONALITY = {
+  red: { cool: 1, comboBonus: 0, combos: null },
+  blue: { cool: 1, comboBonus: 0, combos: null },
+  thales: { cool: 0.6, comboBonus: 0.15, combos: THALES_COMBOS },
+};
+const personality = (me) => PERSONALITY[artOf(me.char)] || PERSONALITY.red;
+// A character's combo table, without the sequences that need a clip it does
+// not have yet (Thales's front kick and uppercut arrive in their own clips).
+const COMBOS_READY = new Map(); // table -> { char -> usable sequences }
+function combosOf(me) {
+  const list = (me && personality(me).combos) || COMBOS;
+  const art = me && artOf(me.char);
+  if (!art || !SHEETS[art]) return list;
+  if (!COMBOS_READY.has(list)) COMBOS_READY.set(list, {});
+  const byChar = COMBOS_READY.get(list);
+  if (!byChar[art]) {
+    const ready = list.filter((c) => c.seq.every((n) => !!clipFrames(me, moveClip(me, n))));
+    byChar[art] = ready.length ? ready : list;
+  }
+  return byChar[art];
+}
+const STRIKES_OF = new Map(); // combo table -> the strikes in it
+function strikesOf(me) {
+  const list = combosOf(me);
+  if (!STRIKES_OF.has(list)) STRIKES_OF.set(list, [...new Set(list.flatMap((c) => c.seq))]);
+  return STRIKES_OF.get(list);
+}
+
 // ---------- Fighters ----------
-function makeFighter(color, shade, arrow, key, face) {
+function applyChar(f) {
+  const c = CHAR_INFO[f.char];
+  f.color = c.color;
+  f.shade = c.shade;
+}
+function makeFighter(slot, char, face) {
   const zero = P({});
-  return {
-    color, shade, arrow, key, face,
+  const f = {
+    // key: the slot, kept for code that still reads the old name.
+    slot, char, key: slot, arrow: ARROW[slot], face, color: '', shade: '',
     x: 0, y: 0, vx: 0, vy: 0, airborne: false,
     state: 'guard', timer: 0, cool: 0.5 + Math.random(), flash: 0,
     clock: Math.random() * 10, phase: 0,
@@ -600,9 +676,13 @@ function makeFighter(color, shade, arrow, key, face) {
     // Stamina (see stepStamina); staminaMax 0 means "fill on the first frame".
     stamina: 0, staminaMax: 0, gassed: false, spent: 0, taken: 0, koExtra: 0, riseTime: RISE_TIME, stepTime: 0, atkTempo: 1,
   };
+  applyChar(f);
+  return f;
 }
-const red = makeFighter('#e53935', '#a32420', '↓', 'down', 1);
-const blue = makeFighter('#1e88e5', '#11589c', '↑', 'up', -1);
+// red and blue name the slot occupants: the download slot (left label arrow
+// down) and the upload slot. The characters in them can change (see Roster).
+const red = makeFighter('down', 'red', 1);
+const blue = makeFighter('up', 'blue', -1);
 const fighters = [red, blue];
 
 // ---------- Stats: speed, stamina, strength ----------
@@ -636,7 +716,7 @@ const DRAIN_SCALE = 0.6;
 const REGEN = 12;
 const REGEN_PT = 1.2;
 const STEP_COST = 1.5 * COST_SCALE;
-const STRIKE_COST = Object.fromEntries(Object.entries({ jab: 4, cross: 4, palm: 4, uppercut: 4, spinFist: 4, elbow: 6, knee: 6, lowKick: 7, sweep: 7, frontKick: 7, teep: 7, highKick: 9, spinKick: 9 }).map(([k, v]) => [k, v * COST_SCALE]));
+const STRIKE_COST = Object.fromEntries(Object.entries({ jab: 4, cross: 4, palm: 4, uppercut: 4, spinFist: 4, elbow: 6, knee: 6, lowKick: 7, sweep: 7, frontKick: 7, teep: 7, highKick: 9, spinKick: 9, hook: 4, frontKickHead: 9, lowKickRetreat: 7 }).map(([k, v]) => [k, v * COST_SCALE]));
 const BLOCK_DRAIN = 5 * DRAIN_SCALE; // times the attacker's strMult
 const hitDrain = (m) => (10 + 0.2 * m.knock) * DRAIN_SCALE; // times strMult
 // Knockout window: the defender is at under KO_BELOW of its stamina. The whole
@@ -749,6 +829,8 @@ function update(me, opp, dt) {
   me.flash -= dt;
   stepStamina(me, dt);
   if (me.state === 'drag' || me.state === 'scene') return;
+  // Roster swap: the leaving and the arriving fighter only run (see Roster).
+  if (me.state === 'exit' || me.state === 'enter') return stepSwapRun(me, opp, dt);
 
   if (me.airborne) {
     me.vy += GRAVITY * dt;
@@ -793,6 +875,9 @@ function update(me, opp, dt) {
 }
 
 function decide(me, opp, dt) {
+  // A roster swap is under way: the knocked-out fighter leaves once it is up,
+  // the winner holds its guard until the newcomer has arrived.
+  if (swap && swapTurn(me, opp, dt)) return;
   const d = Math.abs(opp.x - me.x);
   const oppFree = opp.state !== 'drag';
   setFace(me, Math.sign(opp.x - me.x) || me.face);
@@ -891,7 +976,7 @@ function decide(me, opp, dt) {
   // Gassed (stamina hit 0): no new attack until GASSED_UNTIL is back.
   if (me.gassed) return;
   // Grappling scenes need their own clips; with sprites they stay off for now.
-  if (!SHEETS[me.key] && sceneReady() && opp.state === 'guard') {
+  if (!SHEETS[me.char] && sceneReady() && opp.state === 'guard') {
     const sc = pickScene(me, opp, d);
     if (sc) {
       startScene(sc.kind, me, opp, sc.opts);
@@ -900,7 +985,7 @@ function decide(me, opp, dt) {
   }
   // Red's signature: the Saenchai cartwheel kick when clearly winning.
   // Off for now: it leaves the floor, and the user wants no jumps.
-  if (ALLOW_JUMPS && me.key === 'down' && me === leader && strength(me) >= 1.2 && rangeOf(d) !== 'close' && Math.random() < 0.08) {
+  if (ALLOW_JUMPS && artOf(me.char) === 'red' && me === leader && strength(me) >= 1.2 && rangeOf(d) !== 'close' && Math.random() < 0.08) {
     me.queue = [];
     startMove(me, opp, MOVES.cartwheel);
     return;
@@ -914,7 +999,7 @@ function decide(me, opp, dt) {
     // keep the guard up and wait. Never throw at air.
     if (canStep(me)) {
       let best = null;
-      for (const c of COMBOS) {
+      for (const c of combosOf(me)) {
         const ideal = strikeIdeal(me, opp, c.seq[0]);
         if (ideal != null && (best === null || Math.abs(d - ideal) < Math.abs(d - best))) best = ideal;
       }
@@ -952,19 +1037,20 @@ function pickScene(me, opp, d) {
 // foot travel (see paintSheet), so the legs always carry the movement.
 const STEP_TIME = 0.45; // seconds per push-step, about human speed
 const STEP_MIN = 14 * Z; // px off the wanted distance before a step is taken
-const canStep = (me) => !!(SHEETS[me.key] && SHEETS[me.key].stepF && SHEETS[me.key].stepB);
+const canStep = (me) => !!(SHEETS[me.char] && SHEETS[me.char].stepF && SHEETS[me.char].stepB);
 const MIN_GAP = 38 * Z; // hip-to-hip px below which the bodies would overlap
 
 // Screen px one push-step covers: how much the stance widens while the lead
 // foot steps out (the rear foot then only closes the gap).
 const STEP_LEN = {};
 function stepLength(me) {
-  if (STEP_LEN[me.key] != null) return STEP_LEN[me.key];
-  const c = SHEETS[me.key].stepF;
+  const art = artOf(me.char);
+  if (STEP_LEN[art] != null) return STEP_LEN[art];
+  const c = SHEETS[me.char].stepF;
   const width = (fr) => fr.low[1] - fr.low[0];
   const widen = c.filter((fr) => fr.pin === 0);
   const last = widen.length ? widen[widen.length - 1] : c[Math.floor(c.length / 2)];
-  return (STEP_LEN[me.key] = Math.max(0, (width(last) - width(c[0])) * PIX));
+  return (STEP_LEN[art] = Math.max(0, (width(last) - width(c[0])) * PIX));
 }
 
 // A forward step is allowed only if the opponent is not stepping in at the
@@ -1012,14 +1098,14 @@ function startMove(me, opp, m) {
   me.atkDur = (m.dur * (weak ? 1.15 : 1)) / me.atkTempo;
   spendStamina(me, STRIKE_COST[moveName(m)] || 0);
   // With sprite clips, the hit lands in the middle of the clip's furthest-reaching frame.
-  const clip = clipFrames(me, MOVE_CLIPS[moveName(m)]);
+  const clip = clipFrames(me, moveClip(me, moveName(m)));
   me.hitAt = clip && clip.impact > 0 ? (clip.impact + 0.5) / clip.frames.length : m.hitAt;
   me.idealD = m.ground ? null : idealDistance(me, opp, clip);
   if (FIGHT_TEST && me.idealD != null) {
     const past = predictPast(me, opp, clip, m);
     const ideal = past != null ? Math.abs(opp.x - me.x) - (past - LAND_AT) : me.idealD;
     const d = Math.abs(opp.x - me.x);
-    invoke('showcase_mark', { label: `STRIKE ${me.key} ${moveName(m)} d=${d.toFixed(0)} ideal=${ideal.toFixed(0)} off=${(d - ideal).toFixed(0)} past=${past == null ? '?' : past.toFixed(0)}` }).catch(() => {});
+    invoke('showcase_mark', { label: `STRIKE ${me.slot} ${moveName(m)} d=${d.toFixed(0)} ideal=${ideal.toFixed(0)} off=${(d - ideal).toFixed(0)} past=${past == null ? '?' : past.toFixed(0)}` }).catch(() => {});
   }
   if (!m.ground) me.recent = [moveName(m), ...(me.recent || [])].slice(0, 3);
   if (me.record && !m.ground) me.record.thrown++;
@@ -1036,7 +1122,7 @@ function startMove(me, opp, m) {
   me.defense = !m.ground && Math.random() < defChance ? pick(m.defend) || null : null;
   // The leader can parry a hand strike and counter (elbow, knee, shove), or
   // catch a punch and turn it into an arm lock.
-  if (!SHEETS[opp.key] && (ARMS[m.limb] || m.limb === 'fe') && opp === leader && sceneReady()) {
+  if (!SHEETS[opp.char] && (ARMS[m.limb] || m.limb === 'fe') && opp === leader && sceneReady()) {
     const r = Math.random();
     if (r < (weak ? 0.3 : 0.15)) me.defense = 'counter';
     else if (r < (weak ? 0.45 : 0.3) && (m === MOVES.jab || m === MOVES.cross)) me.defense = 'catch';
@@ -1045,7 +1131,7 @@ function startMove(me, opp, m) {
   if (weak && me.defense && me.defense !== 'counter' && me.defense !== 'catch') {
     const evades = m.defend.filter((x) => EVADES.has(x));
     if (m.aim === 'head' && !evades.includes('bend')) evades.push('bend');
-    if (evades.length) me.defense = SHEETS[opp.key] && m.aim === 'head' ? 'duck' : pick(evades);
+    if (evades.length) me.defense = SHEETS[opp.char] && m.aim === 'head' ? 'duck' : pick(evades);
     if (EVADES.has(me.defense)) startBulletTime(DODGE_GAP);
   }
   // Up close there is no room to duck: the crouch would put the body into
@@ -1053,7 +1139,7 @@ function startMove(me, opp, m) {
   // With sprites, strikes land: in an even exchange every evasion becomes a
   // block. Only an outclassed attacker gets dodged (the slow-motion rule):
   // a sway against punches, a duck only under a head kick from range.
-  if (SHEETS[opp.key] && (me.defense === 'duck' || me.defense === 'bend' || me.defense === 'sway')) {
+  if (SHEETS[opp.char] && (me.defense === 'duck' || me.defense === 'bend' || me.defense === 'sway')) {
     if (!weak) {
       me.defense = m.defend.find((x) => x === 'block' || x === 'blockLow') || 'block';
     } else if (me.defense !== 'sway' && (!LEGS[m.limb] || Math.abs(opp.x - me.x) < DUCK_ROOM)) {
@@ -1063,7 +1149,7 @@ function startMove(me, opp, m) {
   // Speed: in an even exchange a faster defender turns some blocks into
   // evasions, by the same rules as above (a sway, a duck only under a head
   // kick from range); a strike with no evasion in its list stays blocked.
-  if (SHEETS[opp.key] && !weak && (me.defense === 'block' || me.defense === 'blockLow')
+  if (SHEETS[opp.char] && !weak && (me.defense === 'block' || me.defense === 'blockLow')
     && Math.random() < clamp(SPEED_EVADE_PT * (buildOf(opp).speed - buildOf(me).speed), 0, SPEED_EVADE_MAX)) {
     const evades = m.defend.filter((x) => EVADES.has(x));
     if (evades.length || m.aim === 'head') {
@@ -1071,7 +1157,7 @@ function startMove(me, opp, m) {
     }
   }
   // Aim where a blocking guard will be at impact, not where it is now.
-  me.pullback = SHEETS[opp.key] && (me.defense === 'block' || me.defense === 'blockLow')
+  me.pullback = SHEETS[opp.char] && (me.defense === 'block' || me.defense === 'blockLow')
     ? Math.min(BLOCK_PULL_MAX, blockPullback(opp, me.defense, LEG_AIMS.has(m.aim))) : 0;
   if (m.dash) me.vx = me.face * m.dash;
   if (m === MOVES.cartwheel) startBulletTime(4);
@@ -1085,7 +1171,7 @@ function stepAttack(me, opp, dt) {
   const hitTime = me.hitAt * me.atkDur;
   // Press forward while striking so combos keep contact.
   const d = Math.abs(opp.x - me.x);
-  if (!SHEETS[me.key] && !m.dash && d > m.reach - 10 * Z && me.atkT < hitTime) me.x += me.face * Math.min(110 * dt, d - (m.reach - 10 * Z));
+  if (!SHEETS[me.char] && !m.dash && d > m.reach - 10 * Z && me.atkT < hitTime) me.x += me.face * Math.min(110 * dt, d - (m.reach - 10 * Z));
   // Sprites: inch toward the target, measured live against the defender as
   // it is drawn now (a block pulls the guard back), so the strike lands.
   if (canStep(me) && !m.ground && me.atkT < hitTime && me.curClip && me.lastDraw && opp.lastDraw && opp.lastDraw.face !== me.face) {
@@ -1118,7 +1204,7 @@ function stepAttack(me, opp, dt) {
   }
   // Sprite defenders react earlier, as the strike starts to come: the
   // attacker's inching then aims at the guard as it will be at impact.
-  const cueAt = hitTime - (SHEETS[opp.key] ? 0.3 : 0.14);
+  const cueAt = hitTime - (SHEETS[opp.char] ? 0.3 : 0.14);
   if (me.defense && me.defense !== 'catch' && me.defense !== 'counter' && !me.defCued && me.atkT >= cueAt && canDefend) {
     me.defCued = true;
     opp.state = me.defense;
@@ -1130,14 +1216,14 @@ function stepAttack(me, opp, dt) {
       // Where the strike actually lands, as drawn: tip past the opponent's
       // front-most pixel (its guard), in screen px. Expected: 3 art px.
       const edge = (f, e) => f.xw + (f.face < 0 ? f.frame.img.width - 1 - e : e) * PIX;
-      const clip = clipFrames(me, MOVE_CLIPS[moveName(m)]);
+      const clip = clipFrames(me, moveClip(me, moveName(m)));
       let info = '';
       if (clip && me.lastDraw && opp.lastDraw) {
         const tip = edge(me.lastDraw, clip.frames[clip.impact].reach);
         const guard = targetFront(opp.lastDraw, m);
         info = ` past=${(me.face * (tip - guard)).toFixed(0)} anchor=${clip.anchor} shown=${me.lastDraw.frame === clip.frames[clip.impact]} opp=${opp.state} def=${me.defense || '-'} weak=${outclassed(me, opp)}`;
       }
-      invoke('showcase_mark', { label: `IMPACT ${CONTACT ? show.label : me.key + ' ' + moveName(m)}${info}` }).catch(() => {});
+      invoke('showcase_mark', { label: `IMPACT ${CONTACT ? show.label : me.slot + ' ' + moveName(m)}${info}` }).catch(() => {});
       if (CONTACT) stop = Math.max(stop, 0.5);
     }
     impact(me, opp, m);
@@ -1148,6 +1234,14 @@ function stepAttack(me, opp, dt) {
   // A combo goes on with whatever reaches once the opponent is set (see
   // continueCombo); a hit's stagger no longer ends it.
   me.state = 'guard';
+  // Thales's low kick lands behind him: a step back, then the combo goes on
+  // with the opposite-hand straight from the new distance.
+  if (m === MOVES.lowKickRetreat && me.comboLeft > 0 && canStep(me) && opp.state !== 'down' && !opp.airborne) {
+    startStep(me, -1);
+    me.comboUntil = fightClock + STEP_TIME + COMBO_WAIT + 0.4;
+    me.cool = 0;
+    return;
+  }
   if (me.comboLeft > 0 && opp.state !== 'drag' && !opp.airborne && opp.state !== 'down') {
     me.comboUntil = fightClock + COMBO_WAIT;
     me.cool = 0;
@@ -1164,7 +1258,7 @@ const KNOCK_SPRITE = 0.35;
 // (or lead toe for leg strikes), at the height aimed at.
 function contactPoint(me, opp, m) {
   const o = opp.lastDraw;
-  if (!SHEETS[me.key] || !o || !o.frame || o.face === me.face) return me.sk[m.limb];
+  if (!SHEETS[me.char] || !o || !o.frame || o.face === me.face) return me.sk[m.limb];
   return { x: targetFront(o, m), y: aimPoint(opp, m.aim).y };
 }
 
@@ -1215,7 +1309,7 @@ function impact(me, opp, m) {
     opp.timer = Math.min(opp.timer + 0.3, 1.2);
     return;
   }
-  if (!inReach(Math.abs(opp.x - me.x)) || opp.airborne || ['drag', 'down', 'scene'].includes(opp.state)) return;
+  if (!inReach(Math.abs(opp.x - me.x)) || opp.airborne || ['drag', 'down', 'scene', 'exit', 'enter'].includes(opp.state)) return;
   const at = me.sk[m.limb];
   if (opp.state === 'sway' || opp.state === 'duck' || opp.state === 'hop' || opp.state === 'bend') {
     opp.cool = Math.min(opp.cool, 0.15); // a clean dodge opens a counter
@@ -1225,8 +1319,8 @@ function impact(me, opp, m) {
   if (opp.state === 'block' || opp.state === 'blockLow') {
     // Sprite fighters absorb a blocked strike in place: a pushback would
     // slide both feet across the floor.
-    opp.vx = SHEETS[opp.key] ? 0 : me.face * m.knock * str * 0.35 * FRICTION;
-    if (SHEETS[me.key]) impactFeel(me, opp, m, 'block');
+    opp.vx = SHEETS[opp.char] ? 0 : me.face * m.knock * str * 0.35 * FRICTION;
+    if (SHEETS[me.char]) impactFeel(me, opp, m, 'block');
     else {
       sparks(me, at, '#ffffff', 6);
       ring(me, at, '#ffffff');
@@ -1236,7 +1330,7 @@ function impact(me, opp, m) {
     drainStamina(opp, BLOCK_DRAIN * strMult(me)); // blocking still costs: Strength makes it cost more
     // A clean block opens a counter: the defender fires back as soon as the
     // strike is over, and the attacker's combo often stops there.
-    if (SHEETS[opp.key] && !outclassed(opp, me) && Math.random() < 0.25 + 0.5 * share(opp)) {
+    if (SHEETS[opp.char] && !outclassed(opp, me) && Math.random() < 0.25 + 0.5 * share(opp)) {
       opp.cool = Math.min(opp.cool, 0);
       if (Math.random() < 0.6) me.comboLeft = 0;
     }
@@ -1244,7 +1338,7 @@ function impact(me, opp, m) {
   }
   opp.flash = 0.08;
   if (me.record) me.record.landed++;
-  if (SHEETS[me.key]) impactFeel(me, opp, m, 'hit');
+  if (SHEETS[me.char]) impactFeel(me, opp, m, 'hit');
   else {
     sparks(me, at, me.color, 8 + Math.round(8 * str));
     ring(me, at, me.color);
@@ -1260,7 +1354,7 @@ function impact(me, opp, m) {
   const downed = ko || (m.low && Math.random() < p);
   drainStamina(opp, hitDrain(m) * strMult(me));
   if (FIGHT_TEST && (m.low || ko)) {
-    invoke('showcase_mark', { label: `LOWHIT victim=${opp.key} attacker=${me.key} move=${moveName(m)} low=${m.low ? 1 : 0} p=${p.toFixed(2)} down=${downed ? 1 : 0} ko=${ko ? 1 : 0} st=${opp.stamina.toFixed(0)}` }).catch(() => {});
+    invoke('showcase_mark', { label: `LOWHIT victim=${opp.slot} attacker=${me.slot} move=${moveName(m)} low=${m.low ? 1 : 0} p=${p.toFixed(2)} down=${downed ? 1 : 0} ko=${ko ? 1 : 0} st=${opp.stamina.toFixed(0)}` }).catch(() => {});
   }
   if (ko) {
     opp.koExtra = 0.6;
@@ -1268,18 +1362,19 @@ function impact(me, opp, m) {
     // while it gets up knocked it out again a second later.
     opp.stamina = Math.max(opp.stamina, GASSED_UNTIL * opp.staminaMax);
     opp.gassed = false;
-    if (FIGHT_TEST) invoke('showcase_mark', { label: `KO victim=${opp.key} attacker=${me.key} move=${moveName(m)}` }).catch(() => {});
+    if (FIGHT_TEST) invoke('showcase_mark', { label: `KO victim=${opp.slot} attacker=${me.slot} move=${moveName(m)} char=${opp.char}` }).catch(() => {});
     try {
       if (typeof Progress !== 'undefined') Progress.onKnockout(opp, me);
     } catch (err) {
       console.error(err);
     }
+    planSwap(opp, me); // every knockout changes the fighter, when someone waits on the bench
   }
   if (downed) {
     if (me.record) me.record.knockdowns++;
     opp.state = 'down';
     opp.timer = 0.7;
-    opp.vx = me.face * m.knock * str * FRICTION * (SHEETS[opp.key] ? KNOCK_SPRITE : 1);
+    opp.vx = me.face * m.knock * str * FRICTION * (SHEETS[opp.char] ? KNOCK_SPRITE : 1);
     dust(opp, opp.x, opp.y, 6);
     return;
   }
@@ -1290,7 +1385,7 @@ function impact(me, opp, m) {
     opp.vy = -m.launch * str;
     opp.vx = me.face * m.knock * str * 3;
   } else {
-    opp.vx = me.face * m.knock * str * FRICTION * (SHEETS[opp.key] ? KNOCK_SPRITE : 1);
+    opp.vx = me.face * m.knock * str * FRICTION * (SHEETS[opp.char] ? KNOCK_SPRITE : 1);
     if (m.knock * str >= 20) dust(opp, opp.x, opp.y, 4);
   }
 }
@@ -1640,12 +1735,14 @@ const SCENES = {
 // Grounded fighters never stand inside each other.
 function separate() {
   if (scene || red.airborne || blue.airborne || red.state === 'drag' || blue.state === 'drag') return;
+  if (SWAP_STATES.has(red.state) || SWAP_STATES.has(blue.state)) return; // runners may cross
   const dx = blue.x - red.x;
-  const gap = (SHEETS.down ? MIN_GAP * 0.8 : 34 * Z) - Math.abs(dx);
+  const sprites = !!SHEETS[red.char];
+  const gap = (sprites ? MIN_GAP * 0.8 : 34 * Z) - Math.abs(dx);
   if (gap <= 0) return;
   const s = Math.sign(dx) || 1;
   // Sprites ease apart 1 px per frame; a snap would jump both bodies.
-  const push = SHEETS.down ? Math.min(gap, 1) : gap;
+  const push = sprites ? Math.min(gap, 1) : gap;
   red.x -= (s * push) / 2;
   blue.x += (s * push) / 2;
 }
@@ -1659,6 +1756,7 @@ const SPRING = {
   block: [550, 0.7], blockLow: [550, 0.7], bend: [300, 0.7], sway: [450, 0.65], duck: [450, 0.65], hop: [500, 0.6],
   run: [700, 0.75], rest: [120, 0.8], taichi: [35, 1], drag: [70, 0.18], air: [200, 0.5],
   land: [350, 0.6], guard: [220, 0.7], flip: [600, 0.7], scene: [700, 0.6],
+  exit: [700, 0.75], enter: [700, 0.75],
 };
 
 function targetPose(me) {
@@ -1672,7 +1770,9 @@ function targetPose(me) {
       p.ft += swing * 0.7; p.bt += swing * 0.7; p.fs += swing; p.bs += swing; p.t += swing * 0.2;
       return p;
     }
-    case 'run': return mix(POSES.run1, POSES.run2, 0.5 + 0.5 * Math.sin(me.phase));
+    case 'run':
+    case 'exit':
+    case 'enter': return mix(POSES.run1, POSES.run2, 0.5 + 0.5 * Math.sin(me.phase));
     case 'rest': {
       const p = { ...POSES.rest };
       p.t += 4 * Math.sin(c * 6);
@@ -1710,9 +1810,11 @@ function animate(me, dt) {
   // How long the fighter has been in its current state, for one-shot clips.
   if (me.state !== me.lastState) { me.lastState = me.state; me.stateAge = 0; }
   else me.stateAge += dt;
-  if (me.state === 'run') {
+  if (me.state === 'run' || SWAP_STATES.has(me.state)) {
+    // The run cycle keeps pace with the ground speed, so the stride stays the
+    // same length and the feet do not slide (a swap run is faster).
     const before = Math.floor(me.phase / Math.PI);
-    me.phase += (dt * runSpeed(me)) / 20;
+    me.phase += (dt * (SWAP_STATES.has(me.state) ? me.swapSpeed : runSpeed(me))) / 20;
     if (Math.floor(me.phase / Math.PI) !== before) dust(me, me.x - me.face * 4, me.y, 2);
   }
   const target = targetPose(me);
@@ -1799,7 +1901,7 @@ function aimLimbs(me, opp, sk, fx) {
 // quick arcing step when the pose wants it somewhere else. A knocked-back
 // fighter skids on planted feet and steps to catch its balance.
 const STEP_AT = 9 * Z; // px between a planted foot and where the pose wants it
-const FREE_STATES = new Set(['run', 'drag', 'air', 'down', 'rise', 'flip']);
+const FREE_STATES = new Set(['run', 'drag', 'air', 'down', 'rise', 'flip', 'exit', 'enter']);
 
 function footwork(me, sk, desired, dt, fx) {
   const floor = me.y;
@@ -2026,9 +2128,11 @@ function stepParticles(dt) {
 // Heads are hand-drawn pixel maps. The result is scaled up without smoothing.
 const OUT = '#121016';
 
-// Costumes. Tones are [light, base, shadow]; light falls from the upper left.
+// Costumes, per character (the procedural fallback until sprites load; only
+// red and blue have one). Tones are [light, base, shadow]; light falls from
+// the upper left.
 const LOOKS = {
-  down: {
+  red: {
     style: 'muaythai',
     skin: ['#f3b98a', '#d98a57', '#a35a31'],
     shorts: ['#ef5350', '#c62828', '#7a1513'],
@@ -2050,7 +2154,7 @@ const LOOKS = {
       '...KKKKK...',
     ],
   },
-  up: {
+  blue: {
     style: 'gi',
     skin: ['#f8d6b3', '#e5ae85', '#b57b53'],
     gi: ['#7fb0f5', '#2f74d6', '#1a4791'],
@@ -2254,7 +2358,7 @@ function paintTails(a, look, tails) {
 // Paint the fighter into its art canvas. ox, oy = the sprite's screen origin.
 function paintFighter(me, sp) {
   const a = sp.actx;
-  const look = LOOKS[me.key];
+  const look = LOOKS[artOf(me.char)] || LOOKS.red;
   a.clearRect(0, 0, sp.aw, sp.ah);
   const T = (p) => ({ x: (p.x - sp.ox) / PIX, y: (p.y - sp.oy) / PIX });
   const s = {};
@@ -2294,9 +2398,8 @@ function paintFighter(me, sp) {
 // Effects go on top of the snapped figure as whole art pixels.
 function paintEffects(me, sp) {
   const a = sp.actx;
-  const look = LOOKS[me.key];
   const px = (x, y, size = 1) => a.fillRect(Math.round((x - sp.ox) / PIX), Math.round((y - sp.oy) / PIX), size, size);
-  a.fillStyle = look.trail;
+  a.fillStyle = CHAR_INFO[me.char].trail;
   for (const p of me.trail) {
     a.globalAlpha = 0.7 * (1 - p.age / TRAIL_LIFE);
     px(p.x, p.y, 2);
@@ -2351,7 +2454,7 @@ function paintEffects(me, sp) {
 // listed in src/sprites/manifest.json. All frames face right (east); facing
 // left mirrors them. Until a fighter's frames are loaded it is painted by the
 // procedural pixel renderer instead.
-const SHEETS = {}; // fighter key -> { clipName: [{ img, foot }] }
+const SHEETS = {}; // character -> { clipName: [{ img, foot }] } (red2 shares red's)
 
 // Which clip plays for each move. Moves without their own clip borrow the
 // closest one.
@@ -2362,7 +2465,13 @@ const MOVE_CLIPS = {
   knee: 'knee', stomp: 'knee', flyingKick: 'knee',
   frontKick: 'frontKick', teep: 'teep', highKick: 'highKick', spinKick: 'highKick',
   lowKick: 'lowKick', sweep: 'lowKick', cartwheel: 'cartwheelKick',
+  hook: 'hookPro2', frontKickHead: 'frontKickHead', lowKickRetreat: 'lowKickRetreat',
 };
+// A character's own clip for a move, where it differs from MOVE_CLIPS.
+const CHAR_MOVE_CLIPS = {
+  thales: { uppercut: 'uppercut' },
+};
+const moveClip = (me, name) => (CHAR_MOVE_CLIPS[artOf(me.char)] || {})[name] || MOVE_CLIPS[name];
 // When a clip is not made yet, the closest one that exists plays instead.
 const CLIP_FALLBACK = {
   jabPro: ['jab'], straightPro: ['straight', 'jab'], hookPro2: ['hook', 'straight', 'jab'],
@@ -2370,15 +2479,17 @@ const CLIP_FALLBACK = {
   lowKick: ['midKick', 'highKick'], midKick: ['highKick', 'lowKick'], highKick: ['midKick'],
   cartwheelKick: ['highKick'],
   frontKick: ['midKick', 'highKick'], teep: ['midKick', 'highKick'],
+  uppercut: ['hookPro2', 'hook'], frontKickHead: ['highKickV3', 'highKick', 'midKick'],
+  lowKickRetreat: ['lowKickV2', 'lowKick'], lowKickV2: ['lowKick'],
 };
 const LOOP_FPS = { stance: 8, run: 12, hit: 10 };
 
 // Frames to play, in order, for clips whose raw frames hold the extended arm
 // too long: a punch fires, lands and snaps straight back to guard.
 // Only clearly different key poses, as in classic pixel fighting games. Per
-// fighter, because each fighter's clips were generated separately.
+// character, because each character's clips were generated separately.
 const CLIP_FRAMES = {
-  down: {
+  red: {
     jabPro: [0, 3, 7, 8],
     straightPro: [0, 2, 4, 7, 8],
     hookPro2: [0, 1, 4, 6, 8],
@@ -2394,7 +2505,7 @@ const CLIP_FRAMES = {
     sway: [0, 2, 4, 7, 8],
     duck: [0, 2, 3, 5, 7, 8],
   },
-  up: {
+  blue: {
     jabPro: [0, 2, 3, 0],
     straightPro: [0, 3, 4, 8],
     hookPro4: [0, 1, 2, 4, 7, 8],
@@ -2416,13 +2527,15 @@ const CLIP_FRAMES = {
   },
 };
 
-// A fighter's own version of a shared clip name.
+// A character's own version of a shared clip name.
 const CLIP_ALIAS = {
   // Red: Muay Thai. The front kick is his body roundhouse; the teep is its own clip.
-  down: { lowKick: 'lowKickV2', midKick: 'midKickV2', frontKick: 'midKickV2', highKick: 'highKickV3', down: 'downV2' },
+  red: { lowKick: 'lowKickV2', midKick: 'midKickV2', frontKick: 'midKickV2', highKick: 'highKickV3', down: 'downV2' },
+  // Thales: red's pipeline (docs/thales-spec.md); completed when his clips are imported.
+  thales: { lowKick: 'lowKickV2' },
   // Blue: karate. Gyaku-zuki for straights, shuto for hooks and elbows,
   // mae-geri for front kicks, yoko-geri for push kicks, mawashi-geri otherwise.
-  up: {
+  blue: {
     straightPro: 'gyakuZuki', hookPro2: 'shuto', frontKick: 'maeGeri', teep: 'yokoGeri',
     lowKick: 'lowKickV2', midKick: 'midKickV3', highKick: 'highKickV3', knee: 'kneeV2', down: 'downV2',
   },
@@ -2490,14 +2603,16 @@ function loadImage(src) {
   });
 }
 
-// Per fighter: the clip whose frames widen the stance, and the frames used.
+// Per character: the clip whose frames widen the stance, and the frames used.
 // widen: the lead foot steps out (rear foot planted).
 // close: the rear foot follows (lead foot planted), ending on the stance.
 // The generated close clips drift after frame 2 (red widens again, blue turns
 // to the camera), so only their clean frames play; frame 8 is the stance.
+// Thales follows red's pipeline (to be checked when his clips are imported).
 const PUSH_STEP = {
-  down: { widen: 'stepF', close: 'stepClose', closeFrames: [1, 2, 8] },
-  up: { widen: 'stepB', close: 'stepClose', closeFrames: [1, 2, 8] },
+  red: { widen: 'stepF', close: 'stepClose', closeFrames: [1, 2, 8] },
+  blue: { widen: 'stepB', close: 'stepClose', closeFrames: [1, 2, 8] },
+  thales: { widen: 'stepF', close: 'stepClose', closeFrames: [0, 1, 2] }, // his stepClose holds only the 3 frames used
 };
 
 async function loadSheets() {
@@ -2507,7 +2622,12 @@ async function loadSheets() {
   } catch (err) {
     return; // no sprites yet: the procedural renderer stays
   }
+  // Each folder loads once; every character drawn from it (red and its debug
+  // copy red2) shares the same sheet.
   for (const [key, clips] of Object.entries(manifest)) {
+    const owners = Object.keys(CHAR_INFO).filter((c) => CHAR_INFO[c].folder === key);
+    const art = owners.find((c) => !CHAR_INFO[c].art);
+    if (!art) continue; // a folder no character uses
     const sheet = {};
     for (const [name, count] of Object.entries(clips)) {
       try {
@@ -2523,7 +2643,7 @@ async function loadSheets() {
     // Steps are a boxer's push-step: the stance widens (one foot slides out)
     // and closes again (the other foot follows). The clip that widens from
     // the reference stance differs per fighter.
-    const ps = PUSH_STEP[key];
+    const ps = PUSH_STEP[art];
     if (ps && sheet[ps.widen] && sheet[ps.close]) {
       // Each frame records which foot is planted while it plays: 0 = rear
       // (lead foot moving), 1 = lead (rear foot moving). Copies, so the
@@ -2533,7 +2653,7 @@ async function loadSheets() {
       sheet.stepF = widen.concat(close);
       sheet.stepB = sheet.stepF.slice().reverse(); // rear foot back first, then the lead follows
     }
-    if (sheet.stance) SHEETS[key] = sheet;
+    if (sheet.stance) for (const c of owners) SHEETS[c] = sheet;
   }
 }
 
@@ -2547,17 +2667,18 @@ const CLIP_CACHE = new Map();
 // the rear foot back while the body drops: holding the front foot keeps his
 // body behind his own guard (holding the rear heel threw him into the
 // attacker by up to 36 px).
-const CLIP_ANCHOR = { up: { duck: 'front', block: 'front' } };
+const CLIP_ANCHOR = { blue: { duck: 'front', block: 'front' } };
 function clipFrames(me, name) {
-  const sheet = SHEETS[me.key];
+  const sheet = SHEETS[me.char];
   if (!sheet || !name) return null;
-  name = (CLIP_ALIAS[me.key] || {})[name] || name;
+  const art = artOf(me.char); // a debug copy uses its original's tables and cache
+  name = (CLIP_ALIAS[art] || {})[name] || name;
   const found = [name, ...(CLIP_FALLBACK[name] || [])].find((n) => sheet[n]);
   if (!found) return null;
-  const key = me.key + ':' + found;
+  const key = art + ':' + found;
   if (CLIP_CACHE.has(key)) return CLIP_CACHE.get(key);
   const all = sheet[found];
-  const order = ((CLIP_FRAMES[me.key] || {})[found] || []).filter((i) => i < all.length);
+  const order = ((CLIP_FRAMES[art] || {})[found] || []).filter((i) => i < all.length);
   const frames = order.length ? order.map((i) => all[i]) : all;
   // Follow one foot through the clip: each frame takes the floor patch nearest
   // to where that foot was in the previous frame.
@@ -2584,7 +2705,7 @@ function clipFrames(me, name) {
   const rearTrack = track(f0.length ? f0[0][0] : frames[0].rear, 0);
   const frontTrack = track(f0.length ? f0[f0.length - 1][1] : frames[0].front, 1);
   const spread = (t) => Math.max(...t) - Math.min(...t);
-  const forced = (CLIP_ANCHOR[me.key] || {})[found];
+  const forced = (CLIP_ANCHOR[art] || {})[found];
   const anchor = forced || (spread(rearTrack) <= spread(frontTrack) ? 'rear' : 'front');
   const pins = anchor === 'rear' ? rearTrack : frontTrack;
   // Impact is the furthest-reaching frame before recovery starts (first 60%).
@@ -2603,8 +2724,8 @@ const moveName = (m) => Object.keys(MOVES).find((k) => MOVES[k] === m);
 // planted foot pinned as drawn), plus how far the opponent's guard sticks out
 // in front of its own hip. Null without sprites.
 function idealDistance(me, opp, clip) {
-  const mine = SHEETS[me.key];
-  const theirs = SHEETS[opp.key];
+  const mine = SHEETS[me.char];
+  const theirs = SHEETS[opp.char];
   if (!clip || !mine || !theirs) return null;
   const base = mine.stance[0];
   const f = clip.frames[clip.impact];
@@ -2642,8 +2763,10 @@ function pickFrame(me, sheet) {
   };
   switch (me.state) {
     case 'attack':
-      return once(MOVE_CLIPS[moveName(me.move)], me.atkT / me.atkDur) || loop('stance');
+      return once(moveClip(me, moveName(me.move)), me.atkT / me.atkDur) || loop('stance');
     case 'run':
+    case 'exit':
+    case 'enter':
       return (sheet.run || sheet.stance)[Math.floor(me.phase / (Math.PI / 3)) % (sheet.run || sheet.stance).length];
     case 'hit':
       return once('hit', me.stateAge / 0.3) || loop('stance');
@@ -2769,7 +2892,7 @@ function paintSheet(me, sp, sheet) {
     me.lastDraw = { xw: sp.ox + x * PIX, frame: f, face: me.face };
     me.lastRear = rearWorld(x, f);
     me.lastClip = me.curClip;
-  } else if (me.state === 'run' && !me.airborne) {
+  } else if ((me.state === 'run' || SWAP_STATES.has(me.state)) && !me.airborne) {
     // Running is centred on the hip (the legs cycle), but its rear heel is
     // remembered so stopping hands over to the stance without a jump.
     const heel = f.feet.length ? f.feet[0][0] : f.rear;
@@ -2783,12 +2906,13 @@ function paintSheet(me, sp, sheet) {
   if (!pinned || !base || me.airborne) me.lastDraw = null;
   const y = Math.round((floorY - sp.oy) / PIX - foot - 1);
   me.labelY = sp.oy + (y + top) * PIX; // speed label sits above the sprite
-  if (FIGHT_TEST && f.low) {
-    // Foot trace for validation: world x of both foot edges as drawn.
+  if (FIGHT_TEST && f.low && !SWAP_STATES.has(me.state)) {
+    // Foot trace for validation: world x of both foot edges as drawn. Swap
+    // runs (and the body leaving the screen) are not fight footwork.
     const col = (e) => (fx < 0 ? img.width - 1 - e : e);
     const r = sp.ox + (x + col(f.low[0])) * PIX;
     const q = sp.ox + (x + col(f.low[1])) * PIX;
-    footTrace.push(`${me.key[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${me.curClip ? me.curFrame : -1}`);
+    footTrace.push(`${me.slot[0]},${me.state},${Math.round(fightClock * 1000)},${Math.round(Math.min(r, q))},${Math.round(Math.max(r, q))},${me.curClip ? me.curFrame : -1}`);
   }
   a.save();
   if (fx < 0) {
@@ -2803,7 +2927,7 @@ function paintSheet(me, sp, sheet) {
 // they never overlap.
 const STAMINA_BAR_W = 44;
 function drawLabel(me, opp, box) {
-  const text = me.arrow + ' ' + fmt(speed[me.key]) + '  Lv ' + fighterLevel(me);
+  const text = me.arrow + ' ' + fmt(speed[me.slot]) + '  Lv ' + fighterLevel(me);
   let x = me.sk.hip.x;
   ctx.textAlign = 'center';
   if (Math.abs(opp.x - me.x) < 100) {
@@ -2815,7 +2939,7 @@ function drawLabel(me, opp, box) {
   const y = box.y - 6;
   ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
   ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.strokeStyle = CHAR_INFO[me.char].outline || 'rgba(0, 0, 0, 0.6)'; // dark grey Thales gets a white outline
   ctx.strokeText(text, x, y);
   ctx.fillStyle = me.color;
   ctx.fillText(text, x, y);
@@ -2832,7 +2956,7 @@ function drawLabel(me, opp, box) {
 }
 
 function render() {
-  for (const f of fighters) {
+  for (const f of bodies()) {
     const s = f.sprite;
     // Whole art pixels only, so the picture does not shimmer as it moves.
     const ox = Math.round((f.sk.hip.x - SPRITE_W / 2) / PIX) * PIX;
@@ -2846,7 +2970,7 @@ function render() {
       s.c.style.transform = `translate(${ox + jx}px, ${oy + jy - view.top}px)`;
     }
     s.c.style.zIndex = f.state === 'attack' || f.state === 'scene' ? '2' : '1';
-    if (SHEETS[f.key]) paintSheet(f, s, SHEETS[f.key]);
+    if (SHEETS[f.char]) paintSheet(f, s, SHEETS[f.char]);
     else paintFighter(f, s);
     if (f.ghostDue) {
       f.ghostDue = false;
@@ -2870,8 +2994,8 @@ function render() {
     ctx.drawImage(s.art, 0, 0, SPRITE_W, SPRITE_H);
     ctx.setTransform(dpr, 0, 0, dpr, -ox * dpr, -oy * dpr);
     const box = bounds(f.sk);
-    if (SHEETS[f.key] && f.labelY) box.y = Math.min(box.y, f.labelY - 2);
-    drawLabel(f, f === red ? blue : red, box);
+    if (SHEETS[f.char] && f.labelY) box.y = Math.min(box.y, f.labelY - 2);
+    if (!f.leaving) drawLabel(f, f === red ? blue : red, box); // the label stays with the slot
     if (SHOWCASE && f === red) {
       ctx.font = 'bold 13px "Segoe UI", sans-serif';
       ctx.textAlign = 'left';
@@ -2889,7 +3013,7 @@ const setCursor = (c) => { document.documentElement.style.cursor = c; };
 
 function fighterAt(x, y) {
   for (const f of [red, blue]) {
-    if (!f.sk) continue;
+    if (!f.sk || SWAP_STATES.has(f.state)) continue; // runners in a swap cannot be grabbed
     const b = bounds(f.sk);
     if (x >= b.x - 6 && x <= b.x + b.w + 6 && y >= b.y - 6 && y <= b.y + b.h + 6) return f;
   }
@@ -2963,15 +3087,18 @@ let panelTimer = 0;
 // This session's record per fighter, counted in impact().
 for (const f of fighters) f.record = { thrown: 0, landed: 0, blocked: 0, knockdowns: 0 };
 
-const STYLE = { down: 'Muay Thai', up: 'Karate' };
+// Style belongs to the character, not to the slot.
+const STYLE = { red: 'Muay Thai', blue: 'Karate', thales: 'Muay Thai', red2: 'Muay Thai' };
 
 function renderPanel() {
   const f = panelF;
+  if (!f) return;
+  const slot = f.slot || f.key; // the old key 'down' or 'up' until f.slot exists
   Progress.panel.render(panel, f, {
-    name: f === red ? 'Red' : 'Blue',
-    style: STYLE[f.key],
-    role: f === red ? 'download' : 'upload',
-    traffic: fmt(speed[f.key]),
+    name: Progress.name(f),
+    style: STYLE[Progress.char(f)],
+    role: Progress.roleOf(f), // the slot's traffic role: download or upload
+    traffic: fmt(speed[slot]),
     pct: Math.round(100 * power(f)),
     status: f === leader ? 'Leading' : leader ? 'Trailing' : 'Even',
     record: f.record,
@@ -2988,7 +3115,7 @@ const panelMark = (text) => {
 };
 
 function openPanel(f) {
-  panelMark(`open ${f.key}`);
+  panelMark(`open ${Progress.char(f)} ${f.slot || f.key}`);
   panelF = f;
   renderPanel();
   panel.hidden = false;
@@ -3051,7 +3178,7 @@ async function pollCursor() {
           if (hoverF && hoverF !== panelF && now - hoverSince >= PANEL_SWITCH_MS) {
             panelF = hoverF;
             renderPanel();
-            panelMark(`switch to ${panelF.key}`);
+            panelMark(`switch to ${Progress.char(panelF)} ${panelF.slot || panelF.key}`);
           }
           if (hoverF || overPanel) panelAwaySince = now;
           else if (now - panelAwaySince > PANEL_CLOSE_MS) closePanel();
@@ -3070,6 +3197,268 @@ async function pollCursor() {
   setTimeout(pollCursor, POLL_MS);
 }
 
+// ---------- Roster ----------
+// docs/roster-spec.md: every knockout changes the fighter when a character
+// waits on the bench (first in, first out). The knocked-out character falls
+// and gets up as usual, then runs off toward the screen edge behind it
+// ('exit'). Once it is SWAP_HANDOFF of the way there, the next character runs
+// in from that same edge to the winner's fighting distance ('enter') and the
+// fight goes on. The winner holds its guard meanwhile; nobody strikes.
+const SWAP_STATES = new Set(['exit', 'enter']);
+const SWAP_MAX = 8; // s from the knockout to the fight going on (spec target)
+const SWAP_SLACK = 0.5; // s kept in hand under SWAP_MAX
+const SWAP_OFF = 110; // px past the screen edge where a runner is out of sight
+const SWAP_HANDOFF = 0.6; // share of the exit run after which the newcomer starts
+// Every character that can fight, filtered at start to those whose sheets
+// loaded (a character without clips never enters). Thales joins once his
+// folder is in the sprite manifest.
+let ROSTER = ['red', 'blue', 'thales'];
+let bench = []; // waiting characters, first in line first
+let swap = null; // the swap under way: { f, winner, phase: 'down' | 'exit' | 'enter', ... }
+let FORCE_KO = 0; // test: seconds between forced knockouts, 0 = off
+let forceKoIn = 0;
+const leavers = []; // bodies running off screen after giving up their slot
+const bodies = () => (leavers.length ? fighters.concat(leavers) : fighters);
+const swapMark = (text) => invoke('showcase_mark', { label: `SWAP ${text}` }).catch(() => {});
+
+// Test options NETBATTLE_ROSTER and NETBATTLE_FORCE_KO. There is no bridge
+// command for those two variables yet, so they come in through
+// NETBATTLE_BUILD as "roster=red,blue,red2;forceko=8" (progression.js skips
+// entries that are not a character).
+function parseRosterOptions(text) {
+  const opt = (name) => (String(text || '').match(new RegExp(`(?:^|;)\\s*${name}=([^;]*)`, 'i')) || [])[1];
+  const r = opt('roster');
+  if (r) {
+    const list = r.split(',').map((s) => s.trim()).filter((c, i, a) => CHAR_INFO[c] && a.indexOf(c) === i);
+    if (list.length >= 2) ROSTER = list;
+  }
+  const k = parseFloat(opt('forceko'));
+  if (k > 0) FORCE_KO = k;
+}
+
+// A slot occupant becomes another character: everything drawn from the old
+// character's sheet is dropped so the first frame of the new one starts clean.
+function setChar(f, char) {
+  if (f.char === char) return;
+  f.char = char;
+  applyChar(f);
+  f.lastRear = null;
+  f.lastDraw = null;
+  f.lastClip = null;
+  f.stepClip = null;
+  f.curClip = null;
+  f.loopClip = null;
+  f.loopPin = null;
+  f.feet = null;
+  f.tails = null;
+  f.recent = [];
+}
+
+// After the sheets load: who stands in each slot and who waits. Progress keeps
+// the saved order; the roster in use decides who may take part.
+function applyRoster() {
+  const usable = ROSTER.filter((c) => SHEETS[c]);
+  if (usable.length < 2) return; // no sprites: red and blue stay, procedurally drawn
+  let slots = { down: usable[0], up: usable[1] };
+  let wait = usable.slice(2);
+  try {
+    if (typeof Progress !== 'undefined' && Progress.reconcile) {
+      const r = Progress.reconcile(usable);
+      if (r && usable.includes(r.slots.down) && usable.includes(r.slots.up) && r.slots.down !== r.slots.up) {
+        slots = r.slots;
+        wait = r.bench;
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  setChar(red, slots.down);
+  setChar(blue, slots.up);
+  bench = wait.filter((c, i, a) => usable.includes(c) && c !== slots.down && c !== slots.up && a.indexOf(c) === i);
+  swapMark(`roster ${usable.join(',')} down=${red.char} up=${blue.char} bench=${bench.join(',') || '-'}`);
+}
+
+// The distance the newcomer runs to: the winner's own fighting distance,
+// never closer than the bodies allow.
+const swapWant = (winner) => clamp(+winner.want || 46 * Z, MIN_GAP + 6 * Z, ENGAGE - 10);
+
+// A knockout landed on victim: plan the swap, unless one is already under way
+// (a knockout during exit or enter is ignored) or nobody waits.
+function planSwap(victim, winner) {
+  if (swap || SHOWCASE || !bench.length) return;
+  if (SWAP_STATES.has(victim.state) || SWAP_STATES.has(winner.state)) return;
+  swap = { f: victim, winner, phase: 'down', t0: fightClock, real0: performance.now() };
+  swapMark(`ko ${victim.char} slot=${victim.slot} by=${winner.char}`);
+}
+
+// decide() during a swap. True when the swap took the turn.
+function swapTurn(me, opp, dt) {
+  if (me === swap.f) {
+    if (swap.phase !== 'down') return false;
+    startExit(me, swap.winner); // up again: leave
+    return true;
+  }
+  // The winner: guard up, no new attack, facing the action.
+  me.state = 'guard';
+  me.queue = [];
+  me.comboLeft = 0;
+  me.comboUntil = 0;
+  setFace(me, Math.sign(opp.x - me.x) || me.face);
+  // Too close to the edge the newcomer comes from: give it room with
+  // push-steps (the same steps and rests as in the fight).
+  me.stepRest = (me.stepRest || 0) - dt;
+  if (swap.phase !== 'down' && canStep(me) && me.stepRest <= 0) {
+    const room = swap.dir > 0 ? W - MARGIN - me.x : me.x - MARGIN;
+    if (room < swapWant(me) + 10 * Z && Math.sign(opp.x - me.x) === swap.dir) startStep(me, -1);
+  }
+  return true;
+}
+
+function startExit(me, winner) {
+  const dir = Math.sign(me.x - winner.x) || (me.x < W / 2 ? -1 : 1);
+  const edge = dir > 0 ? W + SWAP_OFF : -SWAP_OFF;
+  const want = swapWant(winner);
+  const exitLen = Math.abs(edge - me.x);
+  const enterLen = Math.abs(edge - clamp(winner.x + dir * want, MARGIN, W - MARGIN));
+  // Run speed: a jog when the way is short; faster when the whole swap would
+  // not fit in SWAP_MAX. The run cycle keeps pace (see animate).
+  const left = Math.max(1.5, SWAP_MAX - SWAP_SLACK - (fightClock - swap.t0));
+  const speed = Math.max(runSpeed(me), (SWAP_HANDOFF * exitLen + enterLen) / left);
+  Object.assign(swap, { phase: 'exit', dir, edge, startX: me.x, speed, want });
+  me.state = 'exit';
+  me.swapSpeed = speed;
+  me.timer = 0;
+  me.vx = 0;
+  me.queue = [];
+  me.comboLeft = 0;
+  me.comboUntil = 0;
+  setFace(me, dir);
+  swapMark(`exit ${me.char} slot=${me.slot} dir=${dir} run=${exitLen.toFixed(0)}+${enterLen.toFixed(0)} speed=${speed.toFixed(0)}`);
+}
+
+// The leaving body goes on as a separate runner, so the slot can take the
+// newcomer while the leaver is still on screen.
+function makeLeaver(src) {
+  const l = makeFighter(src.slot, src.char, src.face);
+  sizeSprite(l.sprite);
+  Object.assign(l, {
+    leaving: true, x: src.x, y: src.y, state: 'exit', lastState: 'exit', stateAge: src.stateAge || 0,
+    phase: src.phase, clock: src.clock, pose: { ...src.pose }, vel: { ...src.vel }, sk: src.sk,
+    swapSpeed: src.swapSpeed, dir: swap.dir, edge: swap.edge, cool: 0,
+  });
+  return l;
+}
+
+function stepLeavers(dt) {
+  for (let i = leavers.length - 1; i >= 0; i--) {
+    const l = leavers[i];
+    l.clock += dt;
+    l.y = ground();
+    l.x += l.dir * l.swapSpeed * dt;
+    if ((l.x - l.edge) * l.dir >= 0) {
+      l.sprite.c.remove();
+      leavers.splice(i, 1);
+    }
+  }
+}
+
+function startEnter(me) {
+  const old = me.char;
+  leavers.push(makeLeaver(me));
+  const next = bench.shift();
+  bench.push(old); // the knocked-out character waits at the end of the line
+  setChar(me, next);
+  try {
+    if (typeof Progress !== 'undefined' && Progress.setSlot) {
+      Progress.setSlot(me.slot, next);
+      Progress.setBench(bench);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  // A fresh fighter just outside the edge, facing in: full stamina, no
+  // leftovers from the one who left.
+  me.x = swap.edge;
+  me.face = -swap.dir;
+  me.pose = { ...POSES.guard };
+  me.vel = P({});
+  me.state = 'enter';
+  me.swapSpeed = swap.speed;
+  me.phase = 0;
+  me.timer = 0;
+  me.vx = 0;
+  me.move = null;
+  me.defense = null;
+  me.stamina = 0;
+  me.staminaMax = 0; // stepStamina fills it on the next frame
+  me.gassed = false;
+  me.koExtra = 0;
+  me.flash = 0;
+  me.trail = [];
+  me.ghosts = [];
+  me.groundDone = false;
+  me.wantT = 0;
+  me.sprite.ox = NaN;
+  swap.phase = 'enter';
+  swapMark(`enter ${next} slot=${me.slot} after=${old} bench=${bench.join(',')}`);
+}
+
+// exit and enter, for the slot occupant (see update).
+function stepSwapRun(me, opp, dt) {
+  me.y = ground();
+  me.vx = 0;
+  if (!swap) { me.state = 'guard'; return; } // safety: never stuck running
+  const step = me.swapSpeed * dt;
+  if (me.state === 'exit') {
+    me.x += swap.dir * step;
+    const way = Math.abs(me.x - swap.startX) / Math.max(1, Math.abs(swap.edge - swap.startX));
+    if (way >= SWAP_HANDOFF) startEnter(me);
+    return;
+  }
+  const w = swap.winner;
+  const tx = clamp(w.x + swap.dir * swap.want, MARGIN, W - MARGIN);
+  if (Math.abs(tx - me.x) > step) {
+    me.x += Math.sign(tx - me.x) * step;
+    return;
+  }
+  // Arrived: guard up, a short cooldown, and the fight goes on.
+  me.x = tx;
+  me.state = 'guard';
+  setFace(me, Math.sign(w.x - me.x) || me.face);
+  me.cool = 0.5;
+  me.stepRest = 0.4;
+  w.cool = Math.max(w.cool, 0.6);
+  swapMark(`done ${Math.round(performance.now() - swap.real0)} clock=${Math.round((fightClock - swap.t0) * 1000)} char=${me.char} d=${Math.abs(w.x - me.x).toFixed(0)}`);
+  swap = null;
+  forceKoIn = FORCE_KO;
+}
+
+// Test: NETBATTLE_FORCE_KO knocks out the leading slot's fighter every
+// FORCE_KO seconds of fight (counted from the last swap), when it stands free.
+function stepForceKo(dt) {
+  if (!FORCE_KO || SHOWCASE || swap || !bench.length) return;
+  if ((forceKoIn -= dt) > 0) return;
+  const victim = leader || red;
+  const winner = victim === red ? blue : red;
+  if (!['guard', 'rest', 'run', 'taichi'].includes(victim.state) || victim.airborne || scene) return;
+  if (winner.state === 'drag' || winner.airborne) return;
+  victim.state = 'down';
+  victim.timer = 0.7;
+  victim.koExtra = 0.6;
+  victim.vx = 0;
+  victim.queue = [];
+  victim.comboLeft = 0;
+  victim.comboUntil = 0;
+  dust(victim, victim.x, victim.y, 6);
+  swapMark(`force ${victim.char} slot=${victim.slot}`);
+  try {
+    if (typeof Progress !== 'undefined') Progress.onKnockout(victim, winner);
+  } catch (err) {
+    console.error(err);
+  }
+  planSwap(victim, winner);
+}
+
 // ---------- Showcase (debug) ----------
 // Set NETBATTLE_SHOWCASE=1 before starting the app: red performs every move,
 // then blue, each from a fixed distance with no defence, so every animation
@@ -3084,10 +3473,10 @@ const footTrace = [];
 // the closest strike distance.
 function dbgFighter(f) {
   const o = f === red ? blue : red;
-  const ideals = STRIKES.map((n) => strikeIdeal(f, o, n)).filter((v) => v != null);
+  const ideals = strikesOf(f).map((n) => strikeIdeal(f, o, n)).filter((v) => v != null);
   const best = ideals.length ? Math.min(...ideals) : NaN;
   const hb = bounds(f.sk); const at = fighterAt(f.x, ground() - 60);
-  return `${f.key}[hit=${at ? at.key : 'none'} box=${Math.round(hb.x)}..${Math.round(hb.x + hb.w)} x=${Math.round(f.x)} cool=${f.cool.toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} want=${(+f.want).toFixed(0)} rest=${(f.stepRest || 0).toFixed(1)} minIdeal=${best.toFixed(0)}]`;
+  return `${f.slot}[char=${f.char} hit=${at ? at.slot : 'none'} box=${Math.round(hb.x)}..${Math.round(hb.x + hb.w)} x=${Math.round(f.x)} cool=${f.cool.toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} want=${(+f.want).toFixed(0)} rest=${(f.stepRest || 0).toFixed(1)} minIdeal=${best.toFixed(0)}]`;
 }
 function stepFightTest(dt) {
   const phase = Math.floor(fightClock / 15) % 3;
@@ -3098,14 +3487,14 @@ function stepFightTest(dt) {
   fightTest.mark -= dt;
   if (fightTest.mark <= 0) {
     fightTest.mark = 3;
-    const info = canStep(red) && canStep(blue) ? ` d=${Math.abs(red.x - blue.x).toFixed(0)} engage=${ENGAGE.toFixed(0)} len=${stepLength(red).toFixed(0)}/${stepLength(blue).toFixed(0)} states=${red.state}/${blue.state} leader=${leader ? leader.key : 'none'} x=${red.x.toFixed(0)}/${blue.x.toFixed(0)} W=${W} ${fighters.map(dbgFighter).join(' ')}` : ' nostep';
+    const info = canStep(red) && canStep(blue) ? ` d=${Math.abs(red.x - blue.x).toFixed(0)} engage=${ENGAGE.toFixed(0)} len=${stepLength(red).toFixed(0)}/${stepLength(blue).toFixed(0)} states=${red.state}/${blue.state} leader=${leader ? leader.slot : 'none'} x=${red.x.toFixed(0)}/${blue.x.toFixed(0)} W=${W} ${fighters.map(dbgFighter).join(' ')}` : ' nostep';
     invoke('showcase_mark', { label: `BOTH ${['red-leads', 'blue-leads', 'close'][phase]}${info}` }).catch(() => {});
     invoke('showcase_mark', { label: `TRACE ${footTrace.splice(0).join(';')}` }).catch(() => {});
     // Stamina per fighter; spent (own strikes and steps) and taken (from the
     // opponent's strikes) are cumulative, for tools/leveling_check.py.
     const st = (f) => {
       const b = buildOf(f);
-      return `${f.key}[st=${f.stamina.toFixed(0)}/${f.staminaMax} r=${staminaRatio(f).toFixed(2)} g=${f.gassed ? 1 : 0} b=${b.speed},${b.stamina},${b.strength} lv=${fighterLevel(f)} spent=${f.spent.toFixed(0)} taken=${f.taken.toFixed(0)}]`;
+      return `${f.slot}[st=${f.stamina.toFixed(0)}/${f.staminaMax} r=${staminaRatio(f).toFixed(2)} g=${f.gassed ? 1 : 0} b=${b.speed},${b.stamina},${b.strength} lv=${fighterLevel(f)} spent=${f.spent.toFixed(0)} taken=${f.taken.toFixed(0)}]`;
     };
     invoke('showcase_mark', { label: `STAMINA ${fighters.map(st).join(' ')}` }).catch(() => {});
   }
@@ -3150,7 +3539,7 @@ function stepShowcase(dt) {
   // Contact mode: start near the strike's reference contact distance; it is
   // refined from the drawn pose just before the strike (see above).
   if (CONTACT) {
-    const ideal = idealDistance(attacker, target, clipFrames(attacker, MOVE_CLIPS[name]));
+    const ideal = idealDistance(attacker, target, clipFrames(attacker, moveClip(attacker, name)));
     if (ideal != null) blue.x = red.x + ideal;
   }
   for (const f of fighters) {
@@ -3207,12 +3596,14 @@ function frameBody() {
     fightClock += dt;
     if (SHOWCASE) stepShowcase(dt);
     if (FIGHT_TEST) stepFightTest(dt);
+    stepForceKo(dt);
     stepScene(dt);
     update(red, blue, dt);
     update(blue, red, dt);
+    stepLeavers(dt);
     separate();
   }
-  for (const f of fighters) {
+  for (const f of bodies()) {
     if (!frozen || f.state === 'drag') animate(f, dt);
     layout(f, f === red ? blue : red, dt);
     stepTails(f, dt);
@@ -3229,10 +3620,13 @@ function frameBody() {
 (async function start() {
   await Progress.init();
   try {
-    HOVER_FAKE = ((await invoke('test_build')).match(/hover=(left|right|swap)/) || [])[1] || null;
+    const build = await invoke('test_build');
+    HOVER_FAKE = (build.match(/hover=(left|right|swap)/) || [])[1] || null;
+    parseRosterOptions(build);
   } catch (err) {
     HOVER_FAKE = null;
   }
+  forceKoIn = FORCE_KO;
   try {
     const mode = await invoke('showcase');
     FIGHT_TEST = mode === 'fight';
@@ -3248,7 +3642,9 @@ function frameBody() {
   red.x = W - 280;
   blue.x = W - 205;
   red.y = blue.y = ground();
-  loadSheets();
+  // The roster is applied once the sheets are in (until then red and blue are
+  // drawn procedurally, as before).
+  loadSheets().then(applyRoster).catch((err) => console.error(err));
   last = performance.now();
   setInterval(frame, 1000 / FPS);
   pollCursor();
