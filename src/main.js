@@ -2949,6 +2949,7 @@ const PANEL_REFRESH_MS = 500;
 const HOVER_SLOW = 0.25;
 const HOVER_OPEN_MS = 2000;
 const PANEL_CLOSE_MS = 600;
+const PANEL_SWITCH_MS = 500; // rest on the other fighter this long to switch the open panel to it
 const panel = document.getElementById('info');
 let hoverF = null;
 let hoverSince = 0;
@@ -2981,7 +2982,13 @@ panel.addEventListener('click', (e) => Progress.panel.click(e, panelF, closePane
 
 // The panel needs room above the fighter, so the window grows to full height
 // while it is open.
+// Test modes log panel events, so the hover panel can be checked from a log.
+const panelMark = (text) => {
+  if (HOVER_FAKE) invoke('showcase_mark', { label: `PANEL ${text}` }).catch(() => {});
+};
+
 function openPanel(f) {
+  panelMark(`open ${f.key}`);
   panelF = f;
   renderPanel();
   panel.hidden = false;
@@ -2992,6 +2999,7 @@ function openPanel(f) {
 }
 
 function closePanel() {
+  panelMark('close');
   panelF = null;
   clearInterval(panelTimer);
   panel.hidden = true;
@@ -3012,10 +3020,22 @@ function inRect(r, x, y, pad) {
   return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad;
 }
 
+// Test hook: NETBATTLE_BUILD="hover=left" or "hover=right" holds a fake cursor
+// on the fighter standing on that side of the screen, so the hover panel can
+// be checked without a mouse.
+let HOVER_FAKE = null;
+const fakeStart = performance.now();
+function fakeCursor() {
+  const [a, b] = red.x <= blue.x ? [red, blue] : [blue, red];
+  // 'swap': left for the first 7 s (the panel opens), then right.
+  const f = HOVER_FAKE === 'left' || (HOVER_FAKE === 'swap' && performance.now() < 7000 + fakeStart) ? a : b;
+  return [f.x, ground() - 60 - view.top];
+}
+
 async function pollCursor() {
   try {
     if (!drag) {
-      const p = await invoke('cursor_pos');
+      const p = HOVER_FAKE ? fakeCursor() : await invoke('cursor_pos');
       if (p) {
         const now = performance.now();
         const f = fighterAt(p[0], p[1] + view.top);
@@ -3023,10 +3043,16 @@ async function pollCursor() {
         if (f !== hoverF) {
           hoverF = f;
           hoverSince = now;
-          if (!f) hoverBlocked = false;
+          hoverBlocked = false; // moving to another fighter (or off) lifts the block
         }
         if (hoverF && !hoverBlocked && !panelF && !viewBusy && now - hoverSince >= HOVER_OPEN_MS) openPanel(hoverF);
         if (panelF) {
+          // Resting on the other fighter moves the panel to it.
+          if (hoverF && hoverF !== panelF && now - hoverSince >= PANEL_SWITCH_MS) {
+            panelF = hoverF;
+            renderPanel();
+            panelMark(`switch to ${panelF.key}`);
+          }
           if (hoverF || overPanel) panelAwaySince = now;
           else if (now - panelAwaySince > PANEL_CLOSE_MS) closePanel();
         }
@@ -3060,7 +3086,8 @@ function dbgFighter(f) {
   const o = f === red ? blue : red;
   const ideals = STRIKES.map((n) => strikeIdeal(f, o, n)).filter((v) => v != null);
   const best = ideals.length ? Math.min(...ideals) : NaN;
-  return `${f.key}[cool=${f.cool.toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} want=${(+f.want).toFixed(0)} rest=${(f.stepRest || 0).toFixed(1)} minIdeal=${best.toFixed(0)}]`;
+  const hb = bounds(f.sk); const at = fighterAt(f.x, ground() - 60);
+  return `${f.key}[hit=${at ? at.key : 'none'} box=${Math.round(hb.x)}..${Math.round(hb.x + hb.w)} x=${Math.round(f.x)} cool=${f.cool.toFixed(1)} combo=${f.comboUntil ? (f.comboUntil - fightClock).toFixed(1) : '-'} want=${(+f.want).toFixed(0)} rest=${(f.stepRest || 0).toFixed(1)} minIdeal=${best.toFixed(0)}]`;
 }
 function stepFightTest(dt) {
   const phase = Math.floor(fightClock / 15) % 3;
@@ -3201,6 +3228,11 @@ function frameBody() {
 
 (async function start() {
   await Progress.init();
+  try {
+    HOVER_FAKE = ((await invoke('test_build')).match(/hover=(left|right|swap)/) || [])[1] || null;
+  } catch (err) {
+    HOVER_FAKE = null;
+  }
   try {
     const mode = await invoke('showcase');
     FIGHT_TEST = mode === 'fight';
